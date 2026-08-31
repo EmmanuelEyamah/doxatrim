@@ -1,12 +1,14 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { Toaster } from "react-hot-toast";
+import { FileText } from "lucide-react";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { ImportZone } from "@/components/ImportZone";
 import { UrlImport } from "@/components/UrlImport";
 import { ClipTimeline } from "@/components/ClipTimeline";
 import { PreviewPlayer } from "@/components/PreviewPlayer";
 import { TrimEditor } from "@/components/TrimEditor";
+import { TranscriptModal } from "@/components/TranscriptModal";
 import { ExportPanel } from "@/components/ExportPanel";
 import { BackgroundAudioPanel } from "@/components/BackgroundAudioPanel";
 import { useSettingsStore } from "@/stores/useSettingsStore";
@@ -20,6 +22,7 @@ function App() {
   const updateTrim = useClipStore((s) => s.updateTrim);
   const selectedClip = clips.find((c) => c.id === selectedClipId) ?? null;
   const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement>(null);
+  const [transcriptOpen, setTranscriptOpen] = useState(false);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");
@@ -76,7 +79,33 @@ function App() {
               onTrimChange={(inPoint, outPoint) => updateTrim(selectedClip.id, inPoint, outPoint)}
               mediaRef={mediaRef}
             />
+            {selectedClip.transcript && selectedClip.transcript.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setTranscriptOpen(true)}
+                className="flex w-fit items-center gap-2 rounded-lg border border-border px-3 py-1.5 text-xs font-semibold text-muted-foreground hover:text-foreground"
+              >
+                <FileText size={14} /> View transcript
+              </button>
+            )}
           </motion.div>
+        )}
+
+        {selectedClip?.transcript && (
+          <TranscriptModal
+            open={transcriptOpen}
+            onClose={() => setTranscriptOpen(false)}
+            transcript={selectedClip.transcript}
+            onSeek={(time) => {
+              if (mediaRef.current) mediaRef.current.currentTime = time;
+            }}
+            onSetIn={(time) =>
+              updateTrim(selectedClip.id, Math.min(time, selectedClip.outPoint - 0.05), selectedClip.outPoint)
+            }
+            onSetOut={(time) =>
+              updateTrim(selectedClip.id, selectedClip.inPoint, Math.max(time, selectedClip.inPoint + 0.05))
+            }
+          />
         )}
 
         <BackgroundAudioPanel />

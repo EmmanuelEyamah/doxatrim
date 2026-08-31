@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { Clip } from "@/types/clip";
+import type { Clip, TranscriptCue } from "@/types/clip";
 
 interface ClipStore {
   clips: Clip[];
@@ -9,6 +9,7 @@ interface ClipStore {
   reorderClips: (fromIndex: number, toIndex: number) => void;
   updateTrim: (id: string, inPoint: number, outPoint: number) => void;
   selectClip: (id: string) => void;
+  setTranscript: (id: string, transcript: TranscriptCue[]) => void;
 }
 
 export const useClipStore = create<ClipStore>()((set) => ({
@@ -51,4 +52,9 @@ export const useClipStore = create<ClipStore>()((set) => ({
     })),
 
   selectClip: (id) => set({ selectedClipId: id }),
+
+  setTranscript: (id, transcript) =>
+    set((s) => ({
+      clips: s.clips.map((c) => (c.id === id ? { ...c, transcript } : c)),
+    })),
 }));

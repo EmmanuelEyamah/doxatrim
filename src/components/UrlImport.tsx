@@ -4,6 +4,7 @@ import { Download, Link2, Loader2, ListVideo } from "lucide-react";
 import toast from "react-hot-toast";
 import { buildClipsFromFiles } from "@/lib/buildClips";
 import { useClipStore } from "@/stores/useClipStore";
+import type { TranscriptCue } from "@/types/clip";
 
 const IMPORT_SERVER_URL = "http://localhost:4321";
 
@@ -23,6 +24,21 @@ interface SelectableEntry extends PlaylistEntry {
   selected: boolean;
 }
 
+interface JobProgress {
+  phase: "downloading" | "transferring";
+  percent: number;
+  speed: string | null;
+  eta: string | null;
+}
+
+interface JobStatus {
+  status: "downloading" | "done" | "error";
+  percent: number;
+  speed: string | null;
+  eta: string | null;
+  error: string | null;
+}
+
 function formatDuration(seconds: number | null): string {
   if (seconds == null) return "--:--";
   const m = Math.floor(seconds / 60);
@@ -37,6 +53,7 @@ export const UrlImport = () => {
   const [checking, setChecking] = useState(false);
   const [entries, setEntries] = useState<SelectableEntry[]>([]);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const [jobProgress, setJobProgress] = useState<JobProgress | null>(null);
   const [lastDownload, setLastDownload] = useState<DownloadedSource | null>(null);
 
   const importing = progress !== null;
@@ -44,20 +61,91 @@ export const UrlImport = () => {
   const selectedCount = entries.filter((e) => e.selected).length;
 
   const importSingleVideo = async (videoUrl: string): Promise<File> => {
-    const res = await fetch(`${IMPORT_SERVER_URL}/api/import-url`, {
+    const startRes = await fetch(`${IMPORT_SERVER_URL}/api/import-jobs`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ url: videoUrl }),
     });
-    if (!res.ok) {
-      const body = await res.json().catch(() => null);
-      throw new Error(body?.error || `Import failed (HTTP ${res.status})`);
+    if (!startRes.ok) {
+      const body = await startRes.json().catch(() => null);
+      throw new Error(body?.error || `Import failed (HTTP ${startRes.status})`);
     }
-    const blob = await res.blob();
-    const disposition = res.headers.get("Content-Disposition") || "";
+    const { jobId } = await startRes.json();
+
+    // Poll for live progress instead of blocking silently on one long request.
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 1000));
+      const statusRes = await fetch(`${IMPORT_SERVER_URL}/api/import-jobs/${jobId}`);
+      if (!statusRes.ok) throw new Error(`Lost track of the import job (HTTP ${statusRes.status})`);
+      const job: JobStatus = await statusRes.json();
+
+      if (job.status === "downloading") {
+        setJobProgress({ phase: "downloading", percent: job.percent, speed: job.speed, eta: job.eta });
+        continue;
+      }
+      if (job.status === "error") {
+        throw new Error(job.error || "Import failed");
+      }
+      break; // done
+    }
+
+    // yt-dlp finishing doesn't mean the browser has the bytes yet — a
+    // 1080p hour-long video can be several hundred MB+. Track the transfer
+    // from this server to the browser too, instead of the UI going silent
+    // right when it looks "almost done".
+    setJobProgress({ phase: "transferring", percent: 0, speed: null, eta: null });
+    const fileRes = await fetch(`${IMPORT_SERVER_URL}/api/import-jobs/${jobId}/file`);
+    if (!fileRes.ok) {
+      const body = await fileRes.json().catch(() => null);
+      throw new Error(body?.error || `Failed to fetch the downloaded file (HTTP ${fileRes.status})`);
+    }
+
+    const disposition = fileRes.headers.get("Content-Disposition") || "";
     const filenameMatch = /filename="([^"]+)"/.exec(disposition);
     const filename = filenameMatch?.[1] || "imported-video.mp4";
-    return new File([blob], filename, { type: blob.type || "video/mp4" });
+    const contentType = fileRes.headers.get("Content-Type") || "video/mp4";
+    const totalBytes = Number(fileRes.headers.get("Content-Length")) || 0;
+    const reader = fileRes.body?.getReader();
+
+    if (!reader) {
+      const blob = await fileRes.blob();
+      return new File([blob], filename, { type: contentType });
+    }
+
+    const chunks: Uint8Array<ArrayBuffer>[] = [];
+    let received = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      received += value.length;
+      if (totalBytes > 0) {
+        setJobProgress({
+          phase: "transferring",
+          percent: Math.round((received / totalBytes) * 100),
+          speed: null,
+          eta: null,
+        });
+      }
+    }
+    return new File(chunks, filename, { type: contentType });
+  };
+
+  // Best-effort, non-blocking: captions are a bonus, not required for import
+  // to succeed, and many videos simply don't have any.
+  const fetchTranscriptInBackground = (clipId: string, videoUrl: string) => {
+    fetch(`${IMPORT_SERVER_URL}/api/transcript`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: videoUrl }),
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { transcript: TranscriptCue[] } | null) => {
+        if (data?.transcript?.length) {
+          useClipStore.getState().setTranscript(clipId, data.transcript);
+        }
+      })
+      .catch(() => {});
   };
 
   const importAndAdd = async (selected: PlaylistEntry[]) => {
@@ -77,10 +165,12 @@ export const UrlImport = () => {
         if (newClips.length > 0) {
           addClips(newClips);
           successCount++;
+          fetchTranscriptInBackground(newClips[0].id, entry.url);
         }
       } catch (err) {
         toast.error(`${entry.title}: ${err instanceof Error ? err.message : "Import failed"}`);
       } finally {
+        setJobProgress(null);
         setProgress((p) => (p ? { done: p.done + 1, total: p.total } : null));
       }
     }
@@ -170,7 +260,11 @@ export const UrlImport = () => {
               onClick={handleCheckUrl}
               className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50"
             >
-              {checking ? <Loader2 size={16} className="animate-spin" /> : <Link2 size={16} />}
+              {checking || importing ? (
+                <Loader2 size={16} className="animate-spin" />
+              ) : (
+                <Link2 size={16} />
+              )}
               Import
             </button>
           </div>
@@ -221,12 +315,6 @@ export const UrlImport = () => {
             ))}
           </div>
 
-          {importing && progress && (
-            <p className="text-xs text-muted-foreground">
-              Importing {progress.done}/{progress.total}…
-            </p>
-          )}
-
           <div className="flex gap-2">
             <button
               type="button"
@@ -247,6 +335,35 @@ export const UrlImport = () => {
             </button>
           </div>
         </>
+      )}
+
+      {importing && progress && (
+        <div className="flex flex-col gap-1.5">
+          <p className="text-xs text-muted-foreground">
+            Importing {progress.done + 1}/{progress.total}
+            {jobProgress &&
+              ` — ${jobProgress.phase === "downloading" ? "downloading" : "transferring to browser"} ${jobProgress.percent}%`}
+            {jobProgress?.speed && ` · ${jobProgress.speed}`}
+            {jobProgress?.eta && ` · ETA ${jobProgress.eta}`}
+          </p>
+          <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+            <div
+              className="h-full rounded-full bg-primary transition-all"
+              style={{ width: `${jobProgress?.percent ?? 0}%` }}
+            />
+          </div>
+          {jobProgress?.phase === "downloading" && jobProgress.percent < 100 && (
+            <p className="text-[11px] text-muted-foreground">
+              Video and audio download as separate stages — the bar may reset partway through,
+              that's normal.
+            </p>
+          )}
+          {jobProgress?.phase === "transferring" && (
+            <p className="text-[11px] text-muted-foreground">
+              Download from the source finished — now moving the file to your browser.
+            </p>
+          )}
+        </div>
       )}
 
       {lastDownload && (

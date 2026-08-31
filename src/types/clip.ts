@@ -1,5 +1,10 @@
 export type ClipType = "video" | "audio";
 
+export interface TranscriptCue {
+  start: number; // seconds
+  text: string;
+}
+
 export interface Clip {
   id: string;
   file: File;
@@ -9,4 +14,5 @@ export interface Clip {
   outPoint: number; // seconds
   thumbnailUrl?: string;
   order: number;
+  transcript?: TranscriptCue[]; // only populated for URL-imported clips with captions available
 }
