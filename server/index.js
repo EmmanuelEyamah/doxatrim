@@ -19,6 +19,8 @@ const MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024 * 1024; // 2GB, matches v1's stated l
 // before it can even start downloading, on top of the download itself — 5
 // minutes proved too tight for a real video and killed working downloads.
 const DOWNLOAD_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
+const PLAYLIST_INFO_TIMEOUT_MS = 60 * 1000; // metadata only, no download — should be fast
+const MAX_PLAYLIST_ENTRIES = 200; // guard against pasting a 5000-video channel dump
 
 const VIDEO_MIME = {
   mp4: "video/mp4",
@@ -77,6 +79,82 @@ app.post("/api/import-url", async (req, res) => {
     res.status(500).json({ error: err instanceof Error ? err.message : "Import failed." });
   }
 });
+
+app.post("/api/playlist-info", async (req, res) => {
+  const { url } = req.body ?? {};
+
+  if (typeof url !== "string" || !/^https?:\/\//i.test(url)) {
+    return res.status(400).json({ error: "A valid http(s) URL is required." });
+  }
+
+  try {
+    const raw = await runYtDlpJson(url);
+    const rawEntries = Array.isArray(raw.entries) ? raw.entries : [raw];
+    const truncated = rawEntries.length > MAX_PLAYLIST_ENTRIES;
+    const entries = rawEntries.slice(0, MAX_PLAYLIST_ENTRIES).map((e) => ({
+      id: e.id,
+      title: e.title || e.id,
+      duration: typeof e.duration === "number" ? e.duration : null,
+      url: e.url || e.webpage_url || null,
+    })).filter((e) => e.url);
+
+    res.json({
+      isPlaylist: Array.isArray(raw.entries),
+      playlistTitle: raw.title || null,
+      entries,
+      truncated,
+    });
+  } catch (err) {
+    console.error("Playlist info failed:", err);
+    res.status(500).json({ error: err instanceof Error ? err.message : "Failed to read URL." });
+  }
+});
+
+function runYtDlpJson(url) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      "yt-dlp",
+      ["--flat-playlist", "-J", "--no-warnings", url],
+      { stdio: ["ignore", "pipe", "pipe"] }
+    );
+
+    const timeout = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error("Timed out reading playlist/video info."));
+    }, PLAYLIST_INFO_TIMEOUT_MS);
+
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    child.on("error", (err) => {
+      clearTimeout(timeout);
+      if (err.code === "ENOENT") {
+        reject(new Error("yt-dlp is not installed on this server (brew install yt-dlp)."));
+      } else {
+        reject(err);
+      }
+    });
+
+    child.on("close", (code) => {
+      clearTimeout(timeout);
+      if (code !== 0) {
+        reject(new Error(`yt-dlp exited with code ${code}: ${stderr.slice(-500)}`));
+        return;
+      }
+      try {
+        resolve(JSON.parse(stdout));
+      } catch {
+        reject(new Error("Could not parse yt-dlp output."));
+      }
+    });
+  });
+}
 
 function runYtDlp(url, cwd) {
   return new Promise((resolve, reject) => {
