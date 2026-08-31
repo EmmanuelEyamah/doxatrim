@@ -331,41 +331,72 @@ Variant for a light-background version (for use on white):
 
 **ffmpeg.wasm integration**
 - [x] Install `@ffmpeg/ffmpeg` + `@ffmpeg/util`
-- [ ] Confirm cross-origin-isolation headers are set in Vite dev config (required for the multi-threaded core / `SharedArrayBuffer`)
-- [ ] Load ffmpeg core in a Web Worker, confirm it initializes
-- [ ] Run one hardcoded trim command end-to-end (prove the pipeline before building UI around it)
+- [x] Confirm cross-origin-isolation headers are set in Vite dev config (required for the multi-threaded core / `SharedArrayBuffer`)
+- [x] Load ffmpeg core in a Web Worker, confirm it initializes (`useFFmpeg` hook, multi-thread core via `@ffmpeg/core-mt`)
+- [x] Run one hardcoded trim command end-to-end (temporary debug button, confirmed working — removed once real pipeline lands)
 
 **Import**
-- [ ] Build `ImportZone` — drag-drop + file picker fallback
-- [ ] Client-side file type/extension validation (video: mp4/mov/webm, audio: mp3/wav/m4a)
-- [ ] Reject/warn on mixing video + audio-only files at import time
-- [ ] Generate thumbnail (video) — decide eager vs. lazy generation
-- [ ] Show flat placeholder bar for audio (waveform is optional for v1)
+- [x] Build `ImportZone` — drag-drop + file picker fallback
+- [x] Client-side file type/extension validation (video: mp4/mov/webm, audio: mp3/wav/m4a)
+- [x] Reject/warn on mixing video + audio-only files at import time
+- [x] Generate thumbnail (video) — eager, on import
+- [x] Show flat placeholder bar for audio (waveform is optional for v1)
 
 **Trim Editor**
-- [ ] `PreviewPlayer` — `<video>`/`<audio>` element wired to clip source
-- [ ] Scrubber/playhead synced to playback
-- [ ] Draggable in/out range handles
-- [ ] Numeric time inputs (mm:ss.ms) as alternative to dragging
-- [ ] "Set in/out at playhead" buttons
-- [ ] Playback loop/stop constrained to trimmed range
-- [ ] Trim changes reflected immediately in the clip's timeline entry
+- [x] `PreviewPlayer` — `<video>`/`<audio>` element wired to clip source
+- [x] Scrubber/playhead synced to playback (native media element controls)
+- [x] Draggable in/out range handles
+- [x] Numeric time inputs (mm:ss.ms) as alternative to dragging
+- [x] "Set in/out at playhead" buttons
+- [x] Playback loop/stop constrained to trimmed range
+- [x] Trim changes reflected immediately in the clip's timeline entry
 
 **Timeline**
-- [ ] `ClipTimeline` + `ClipBlock` components
-- [ ] Drag-to-reorder clips
-- [ ] Remove clip from project (not from disk)
-- [ ] Running total duration display
-- [ ] Click clip → loads into Trim Editor
+- [x] `ClipTimeline` + `ClipBlock` components
+- [x] Drag-to-reorder clips
+- [x] Remove clip from project (not from disk)
+- [x] Running total duration display
+- [x] Click clip → loads into Trim Editor
 
 **Export**
-- [ ] Trim each clip to in/out range via ffmpeg
-- [ ] Concat in timeline order — stream copy where codecs match, re-encode fallback otherwise (decide now: auto re-encode vs. warn-and-block, per earlier feedback)
-- [ ] Progress indicator wired to ffmpeg.wasm progress events
-- [ ] Output preview + download link on completion
-- [ ] Format-mismatch warning before export if codecs/resolutions differ
+- [x] Trim each clip to in/out range via ffmpeg (`lib/ffmpeg/trim.ts`, stream copy)
+- [x] Concat in timeline order — stream copy first, automatic re-encode fallback on nonzero exit code (`lib/ffmpeg/concat.ts`) — decided: auto re-encode, not warn-and-block
+- [x] Progress indicator wired to ffmpeg.wasm progress events
+- [x] Output preview + download link on completion
+- [x] Format-mismatch warning before export if file extensions differ across clips (heuristic — not a true codec/resolution probe)
 
 **Error & scale handling**
-- [ ] Clear error state if ffmpeg hits memory limits, instead of silent failure
-- [ ] Loading states: file import, ffmpeg core first-load, trim preview, export processing
-- [ ] Manual test with a large file (500MB+) to see where it actually breaks
+- [x] Clear error state if ffmpeg hits memory limits, instead of silent failure (`describeError` in `ExportPanel`)
+- [x] Loading states: file import, ffmpeg core first-load, export processing (trim preview relies on native `<video>`/`<audio>` loading)
+- [ ] Manual test with a large file (500MB+) to see where it actually breaks — **needs you to run this**, not something I can verify
+
+## 18. Autonomous Session Notes (2026-08-30)
+
+You asked me to push ahead on Tier A/B/C while you were out. Here's exactly what shipped, what's stubbed, and what's genuinely blocked — read this before testing so you know what to expect.
+
+### Shipped and testable now
+
+**Background audio mixing** (a scoped slice of Tier C, not the full multi-track timeline):
+- New "Background audio" panel appears once you have at least one clip in the timeline — lets you add one background music/voiceover track (mp3/wav/m4a), trim it (reuses the same `TrimEditor`, now generalized to accept `duration`/`inPoint`/`outPoint`/`onTrimChange` instead of being tied to the main clip store), and set independent volume sliders for the background track and the main timeline.
+- On export, if a background track is set, `lib/ffmpeg/mix.ts` loops/trims it to match the main output's duration and mixes it in via ffmpeg's `amix` filter at your chosen volumes — this directly answers your "background music one is too loud" ask from earlier.
+- This is **not** the full Tier C (no multiple video tracks, no picture-in-picture, no per-track mute/solo) — just enough to solve the specific mixing problem you described.
+
+**URL import** (part of Tier B):
+- New "Import from URL" box above the timeline, gated behind a required "I own this content or have the rights to use it" checkbox — per the v1 spec's stance that this is an internal tool, not a public downloader.
+- Backend: `server/` — a small Express server (`server/index.js`) that shells out to `yt-dlp` (already installed on this machine at `/opt/homebrew/bin/yt-dlp`), downloads to a temp dir, streams the file back, and cleans up. Has a 2GB size cap and a 5-minute timeout.
+- **I tested this end-to-end for real** — not just type-checked. Downloaded a real sample video through the endpoint and confirmed the file arrives intact (788KB MP4, correct headers, temp dir cleaned up after).
+- **To use it, the server has to be running**: `cd server && npm install && npm run dev` (I already ran `npm install` and left it running in the background — port **4321** — but it won't survive a machine restart, so start it again if it's not responding). Frontend is hardcoded to `http://localhost:4321` for now — that's a dev-only shortcut, would need to become an env var for a real deploy.
+
+### Explicitly NOT built — blocked on things only you can provide
+
+**Tier A (accounts, saved projects, real backend)** — did not build this. It needs actual decisions and credentials I don't have: which database, which object storage provider (S3/R2/Supabase), an OAuth app registered under the DOXA domain for sign-in. Building a backend with fake/local stand-ins for all of that would produce something that looks done in the file tree but doesn't reflect a real deployable choice — I didn't think that was useful to hand you.
+
+**Tier B cloud pickers (Google Drive / Dropbox import)** — did not build this. Both need an OAuth app registered in *your* Google Cloud / Dropbox developer console, which only you can create (I can't self-serve a client ID).
+
+**Full Tier C (multiple tracks, PiP, mute/solo)** — did not attempt this. It's the biggest data-model rework in the whole roadmap (§13, §15) and risky to do unsupervised without you around to redirect me if the direction's wrong. What shipped instead (background audio mixing) solves the concrete problem you raised without touching the core timeline model.
+
+### What to test when you're back
+
+1. Background audio: add a main clip, add a background track, adjust both volume sliders, export, confirm the mix sounds right (main audible, background sitting under it, not clipping/distorted).
+2. URL import: confirm `cd server && npm run dev` starts cleanly, paste a URL you have rights to, check the box, import, confirm it lands in the timeline like a normal clip.
+3. The original outstanding item: large file (500MB+) export test — still not done, still needs you.

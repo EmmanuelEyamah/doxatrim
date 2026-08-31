@@ -3,10 +3,8 @@ import { motion } from "framer-motion";
 import { Upload } from "lucide-react";
 import toast from "react-hot-toast";
 import { cn } from "@/lib/utils";
-import { getClipType, validateFiles } from "@/lib/fileValidation";
-import { generateVideoThumbnail, readMediaDuration } from "@/lib/media";
+import { buildClipsFromFiles } from "@/lib/buildClips";
 import { useClipStore } from "@/stores/useClipStore";
-import type { Clip } from "@/types/clip";
 
 export const ImportZone = () => {
   const clips = useClipStore((s) => s.clips);
@@ -17,35 +15,17 @@ export const ImportZone = () => {
 
   const handleFiles = async (fileList: FileList | null) => {
     if (!fileList || fileList.length === 0) return;
-    const files = Array.from(fileList);
-    const { accepted, rejected } = validateFiles(files, clips);
-
-    for (const { file, reason } of rejected) {
-      toast.error(`${file.name}: ${reason}`);
-    }
-    if (accepted.length === 0) return;
 
     setImporting(true);
     try {
-      const newClips = await Promise.all(
-        accepted.map(async (file, i): Promise<Clip> => {
-          const type = getClipType(file)!;
-          const duration = await readMediaDuration(file, type);
-          const thumbnailUrl =
-            type === "video" ? await generateVideoThumbnail(file) : undefined;
-          return {
-            id: crypto.randomUUID(),
-            file,
-            type,
-            originalDuration: duration,
-            inPoint: 0,
-            outPoint: duration,
-            thumbnailUrl,
-            order: clips.length + i,
-          };
-        })
+      const { clips: newClips, rejected } = await buildClipsFromFiles(
+        Array.from(fileList),
+        clips
       );
-      addClips(newClips);
+      for (const { file, reason } of rejected) {
+        toast.error(`${file.name}: ${reason}`);
+      }
+      if (newClips.length > 0) addClips(newClips);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to import file");
     } finally {

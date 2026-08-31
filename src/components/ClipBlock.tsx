@@ -1,4 +1,4 @@
-import { Music, Trash2 } from "lucide-react";
+import { Download, Music, Trash2 } from "lucide-react";
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
 import { formatTime } from "@/lib/formatTime";
@@ -26,6 +26,16 @@ export const ClipBlock = ({
   onDrop,
 }: ClipBlockProps) => {
   const trimmedDuration = clip.outPoint - clip.inPoint;
+
+  const downloadSource = () => {
+    const url = URL.createObjectURL(clip.file);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = clip.file.name;
+    a.click();
+    // Give the browser a moment to pick up the blob before revoking it.
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
 
   return (
     <motion.div
@@ -58,16 +68,29 @@ export const ClipBlock = ({
       <p className="text-xs text-muted-foreground">
         {formatTime(trimmedDuration)} / {formatTime(clip.originalDuration)}
       </p>
-      <button
-        type="button"
-        onClick={(e) => {
-          e.stopPropagation();
-          onRemove();
-        }}
-        className="flex items-center justify-center gap-1 rounded-lg border border-border py-1 text-xs text-muted-foreground hover:text-destructive"
-      >
-        <Trash2 size={12} /> Remove
-      </button>
+      <div className="flex gap-1">
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            downloadSource();
+          }}
+          title="Save the original source file to disk"
+          className="flex flex-1 items-center justify-center gap-1 rounded-lg border border-border py-1 text-xs text-muted-foreground hover:text-foreground"
+        >
+          <Download size={12} />
+        </button>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onRemove();
+          }}
+          className="flex flex-1 items-center justify-center gap-1 rounded-lg border border-border py-1 text-xs text-muted-foreground hover:text-destructive"
+        >
+          <Trash2 size={12} /> Remove
+        </button>
+      </div>
     </motion.div>
   );
 };

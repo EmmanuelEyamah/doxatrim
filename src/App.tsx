@@ -1,59 +1,25 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef } from "react";
 import { motion } from "framer-motion";
+import { Toaster } from "react-hot-toast";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { ImportZone } from "@/components/ImportZone";
+import { UrlImport } from "@/components/UrlImport";
+import { ClipTimeline } from "@/components/ClipTimeline";
+import { PreviewPlayer } from "@/components/PreviewPlayer";
+import { TrimEditor } from "@/components/TrimEditor";
+import { ExportPanel } from "@/components/ExportPanel";
+import { BackgroundAudioPanel } from "@/components/BackgroundAudioPanel";
 import { useSettingsStore } from "@/stores/useSettingsStore";
-import { useFFmpeg } from "@/hooks/useFFmpeg";
+import { useClipStore } from "@/stores/useClipStore";
 import logoDark from "@/assets/logo-dark.png";
-
-// TEMPORARY — proves the ffmpeg.wasm worker + core actually execute before any
-// UI depends on it. Remove once the real trim/export pipeline (steps 12-14) lands.
-function FFmpegDebugTest() {
-  const { ffmpeg, loaded, loading, error } = useFFmpeg();
-  const [result, setResult] = useState<string | null>(null);
-  const [running, setRunning] = useState(false);
-
-  const runTest = async () => {
-    if (!ffmpeg) return;
-    setRunning(true);
-    setResult(null);
-    try {
-      await ffmpeg.exec([
-        "-f", "lavfi", "-i", "testsrc=duration=1:size=64x64:rate=1",
-        "-t", "1", "out.mp4",
-      ]);
-      const data = await ffmpeg.readFile("out.mp4");
-      setResult(`OK — produced ${data.length} bytes`);
-    } catch (err) {
-      setResult(`FAILED — ${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      setRunning(false);
-    }
-  };
-
-  return (
-    <div className="flex flex-col items-center gap-2 rounded-xl border border-border bg-card p-4 text-sm">
-      <p className="text-muted-foreground">
-        crossOriginIsolated: {String(window.crossOriginIsolated)}
-        {!window.crossOriginIsolated && " — restart `npm run dev` to pick up COOP/COEP headers"}
-      </p>
-      <p className="text-muted-foreground">
-        ffmpeg core: {error ? `error — ${error}` : loading ? "loading…" : loaded ? "loaded" : "idle"}
-      </p>
-      <button
-        type="button"
-        disabled={!loaded || running}
-        onClick={runTest}
-        className="rounded-lg bg-primary px-4 py-2 text-primary-foreground disabled:opacity-50"
-      >
-        {running ? "Running test…" : "Test ffmpeg"}
-      </button>
-      {result && <p className="text-muted-foreground">{result}</p>}
-    </div>
-  );
-}
 
 function App() {
   const theme = useSettingsStore((s) => s.theme);
+  const clips = useClipStore((s) => s.clips);
+  const selectedClipId = useClipStore((s) => s.selectedClipId);
+  const updateTrim = useClipStore((s) => s.updateTrim);
+  const selectedClip = clips.find((c) => c.id === selectedClipId) ?? null;
+  const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement>(null);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");
@@ -61,30 +27,61 @@ function App() {
   }, [theme]);
 
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center gap-6 bg-background text-foreground">
-      <div className="absolute right-6 top-6">
-        <ThemeToggle />
-      </div>
-      <motion.img
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.4, ease: "easeOut" }}
-        src={logoDark}
-        alt="DoxaTrim"
-        className="h-20 w-20 rounded-2xl"
+    <div className="min-h-screen bg-background text-foreground">
+      <Toaster
+        position="top-right"
+        toastOptions={{
+          style: {
+            background: "var(--card)",
+            color: "var(--foreground)",
+            border: "1px solid var(--border)",
+          },
+        }}
       />
-      <motion.h1
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.4, delay: 0.1, ease: "easeOut" }}
-        className="text-3xl font-black tracking-tight"
-      >
-        DoxaTrim
-      </motion.h1>
-      <p className="text-sm text-muted-foreground">
-        Scaffold ready — build the import zone next.
-      </p>
-      <FFmpegDebugTest />
+
+      <header className="flex items-center justify-between border-b border-border px-6 py-4">
+        <div className="flex items-center gap-3">
+          <img src={logoDark} alt="DoxaTrim" className="h-8 w-8 rounded-lg" />
+          <span className="text-lg font-black tracking-tight">DoxaTrim</span>
+        </div>
+        <ThemeToggle />
+      </header>
+
+      <main className="mx-auto flex max-w-5xl flex-col gap-6 p-6">
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4, ease: "easeOut" }}
+        >
+          <ImportZone />
+        </motion.div>
+
+        <UrlImport />
+
+        <ClipTimeline />
+
+        {selectedClip && (
+          <motion.div
+            key={selectedClip.id}
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4, ease: "easeOut" }}
+            className="flex flex-col gap-4"
+          >
+            <PreviewPlayer ref={mediaRef} clip={selectedClip} />
+            <TrimEditor
+              duration={selectedClip.originalDuration}
+              inPoint={selectedClip.inPoint}
+              outPoint={selectedClip.outPoint}
+              onTrimChange={(inPoint, outPoint) => updateTrim(selectedClip.id, inPoint, outPoint)}
+              mediaRef={mediaRef}
+            />
+          </motion.div>
+        )}
+
+        <BackgroundAudioPanel />
+        <ExportPanel />
+      </main>
     </div>
   );
 }
