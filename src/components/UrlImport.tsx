@@ -39,6 +39,19 @@ interface JobStatus {
   error: string | null;
 }
 
+/** Prefers the RFC 5987 UTF-8 filename (real title, accents/emoji intact) over the ASCII fallback. */
+function parseFilename(disposition: string): string | null {
+  const utf8Match = /filename\*=UTF-8''([^;]+)/i.exec(disposition);
+  if (utf8Match) {
+    try {
+      return decodeURIComponent(utf8Match[1]);
+    } catch {
+      // fall through to the ASCII fallback below
+    }
+  }
+  return /filename="([^"]+)"/.exec(disposition)?.[1] ?? null;
+}
+
 function formatDuration(seconds: number | null): string {
   if (seconds == null) return "--:--";
   const m = Math.floor(seconds / 60);
@@ -101,8 +114,7 @@ export const UrlImport = () => {
     }
 
     const disposition = fileRes.headers.get("Content-Disposition") || "";
-    const filenameMatch = /filename="([^"]+)"/.exec(disposition);
-    const filename = filenameMatch?.[1] || "imported-video.mp4";
+    const filename = parseFilename(disposition) || "imported-video.mp4";
     const contentType = fileRes.headers.get("Content-Type") || "video/mp4";
     const totalBytes = Number(fileRes.headers.get("Content-Length")) || 0;
     const reader = fileRes.body?.getReader();

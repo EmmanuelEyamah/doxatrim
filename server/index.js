@@ -46,6 +46,12 @@ const VIDEO_MIME = {
   mov: "video/quicktime",
 };
 
+/** RFC 5987-safe Content-Disposition header value for a real (non-ASCII-safe) filename. */
+function contentDisposition(filename) {
+  const asciiFallback = filename.replace(/[^\x20-\x7E]/g, "_").replace(/"/g, "'");
+  return `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
+}
+
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -72,6 +78,7 @@ app.post("/api/import-jobs", async (req, res) => {
     error: null,
     workDir,
     filePath: null,
+    filename: null,
     updatedAt: Date.now(),
   };
   importJobs.set(id, job);
@@ -95,6 +102,7 @@ app.post("/api/import-jobs", async (req, res) => {
       job.status = "done";
       job.percent = 100;
       job.filePath = filePath;
+      job.filename = outputFile; // yt-dlp already named this from the video's real title
       job.updatedAt = Date.now();
     })
     .catch(async (err) => {
@@ -125,7 +133,7 @@ app.get("/api/import-jobs/:id/file", async (req, res) => {
   const ext = path.extname(job.filePath).slice(1).toLowerCase();
   const { size } = await stat(job.filePath);
   res.setHeader("Content-Type", VIDEO_MIME[ext] || "application/octet-stream");
-  res.setHeader("Content-Disposition", `attachment; filename="import-${randomUUID()}.${ext}"`);
+  res.setHeader("Content-Disposition", contentDisposition(job.filename || `import-${randomUUID()}.${ext}`));
   // Lets the client show real transfer progress instead of going silent while
   // a large file (a 1080p hour-long video can be several hundred MB+) moves
   // from this server to the browser after the yt-dlp download itself is done.
@@ -314,7 +322,10 @@ function runYtDlp(url, cwd, onProgress) {
         "-f", "bv*[height<=1080]+ba/b[height<=1080]/b",
         "--merge-output-format", "mp4",
         "--newline", // one progress update per line, not carriage-return overwrites
-        "-o", "%(id)s.%(ext)s",
+        // Named from the real video title (yt-dlp sanitizes it for the
+        // filesystem automatically), not the video ID — so what you save
+        // to disk actually reads as the video, not "import-<uuid>".
+        "-o", "%(title).200B.%(ext)s",
         url,
       ],
       { cwd }

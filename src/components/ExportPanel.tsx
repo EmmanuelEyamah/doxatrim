@@ -11,6 +11,10 @@ import { mixBackgroundAudio } from "@/lib/ffmpeg/mix";
 import { useBackgroundAudioStore } from "@/stores/useBackgroundAudioStore";
 import type { OutputFormat } from "@/types/project";
 
+function baseName(filename: string): string {
+  return filename.replace(/\.[^./]+$/, "");
+}
+
 function describeError(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err);
   if (/memory|oom|out of memory|aborted/i.test(message)) {
@@ -34,6 +38,10 @@ export const ExportPanel = () => {
   const outputFormat: OutputFormat = projectType === "audio" ? audioFormat : "mp4";
   const extensions = new Set(clips.map((c) => c.file.name.split(".").pop()?.toLowerCase()));
   const formatMismatch = extensions.size > 1;
+  // Named from the source clip, not a generic "doxatrim-export" — multiple
+  // clips get joined under the first one's name, matching what you'd expect
+  // to find it as later.
+  const exportFilename = `${baseName(clips[0].file.name)} (edited).${outputFormat}`;
 
   const clearOutput = () => {
     if (outputUrl) URL.revokeObjectURL(outputUrl);
@@ -143,7 +151,7 @@ export const ExportPanel = () => {
           <div className="flex items-center gap-2">
             <a
               href={outputUrl}
-              download={`doxatrim-export.${outputFormat}`}
+              download={exportFilename}
               className="flex items-center gap-2 rounded-lg border border-border px-4 py-2 text-sm font-semibold"
             >
               <Download size={16} /> Download
