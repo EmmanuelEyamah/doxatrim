@@ -44,6 +44,7 @@ const VIDEO_MIME = {
   webm: "video/webm",
   mkv: "video/x-matroska",
   mov: "video/quicktime",
+  mp3: "audio/mpeg",
 };
 
 /** RFC 5987-safe Content-Disposition header value for a real (non-ASCII-safe) filename. */
@@ -61,11 +62,12 @@ app.use(express.json());
 // no way to tell "slow" from "stuck") and forces an arbitrary flat timeout.
 // This lets the client poll for live progress and only fetch bytes once done.
 app.post("/api/import-jobs", async (req, res) => {
-  const { url } = req.body ?? {};
+  const { url, mediaType } = req.body ?? {};
 
   if (typeof url !== "string" || !/^https?:\/\//i.test(url)) {
     return res.status(400).json({ error: "A valid http(s) URL is required." });
   }
+  const wantAudioOnly = mediaType === "audio";
 
   const id = randomUUID();
   const workDir = await mkdtemp(path.join(tmpdir(), "doxatrim-"));
@@ -83,7 +85,7 @@ app.post("/api/import-jobs", async (req, res) => {
   };
   importJobs.set(id, job);
 
-  runYtDlp(url, workDir, (progress) => {
+  runYtDlp(url, workDir, wantAudioOnly, (progress) => {
     Object.assign(job, progress, { updatedAt: Date.now() });
   })
     .then(async () => {
@@ -138,6 +140,12 @@ app.get("/api/import-jobs/:id/file", async (req, res) => {
   // a large file (a 1080p hour-long video can be several hundred MB+) moves
   // from this server to the browser after the yt-dlp download itself is done.
   res.setHeader("Content-Length", String(size));
+  // Content-Disposition isn't in the browser's default CORS-safelisted
+  // response headers — without this, fetch()'s headers.get() silently
+  // returns null for it cross-origin (curl doesn't enforce CORS at all,
+  // which is why testing this with curl looked fine while the real browser
+  // fell back to the generic filename every time).
+  res.setHeader("Access-Control-Expose-Headers", "Content-Disposition, Content-Length");
 
   const stream = createReadStream(job.filePath);
   stream.pipe(res);
@@ -310,26 +318,36 @@ const PROGRESS_RE = /\[download\]\s+(\d+(?:\.\d+)?)%/;
 const SPEED_RE = /at\s+([\d.]+\s*[KMGT]?i?B\/s)/;
 const ETA_RE = /ETA\s+(\S+)/;
 
-function runYtDlp(url, cwd, onProgress) {
+function runYtDlp(url, cwd, audioOnly, onProgress) {
   return new Promise((resolve, reject) => {
-    const child = spawn(
-      "yt-dlp",
-      [
-        "--no-playlist",
-        // Capped at 1080p — a lot of YouTube source is 4K/8K, and downloading
-        // full quality for a trim tool was making imports painfully slow for
-        // no real benefit (nobody's exporting 4K out of DoxaTrim v1 anyway).
-        "-f", "bv*[height<=1080]+ba/b[height<=1080]/b",
-        "--merge-output-format", "mp4",
-        "--newline", // one progress update per line, not carriage-return overwrites
-        // Named from the real video title (yt-dlp sanitizes it for the
-        // filesystem automatically), not the video ID — so what you save
-        // to disk actually reads as the video, not "import-<uuid>".
-        "-o", "%(title).200B.%(ext)s",
-        url,
-      ],
-      { cwd }
-    );
+    const args = audioOnly
+      ? [
+          "--no-playlist",
+          // Audio-only skips the video stream entirely — smaller, much
+          // faster, and this is literally all yt-dlp needs to fetch when the
+          // destination is "save it as an mp3 on my phone", not a video file.
+          "-f", "bestaudio/best",
+          "-x", "--audio-format", "mp3",
+          "--newline",
+          "-o", "%(title).200B.%(ext)s",
+          url,
+        ]
+      : [
+          "--no-playlist",
+          // Capped at 1080p — a lot of YouTube source is 4K/8K, and downloading
+          // full quality for a trim tool was making imports painfully slow for
+          // no real benefit (nobody's exporting 4K out of DoxaTrim v1 anyway).
+          "-f", "bv*[height<=1080]+ba/b[height<=1080]/b",
+          "--merge-output-format", "mp4",
+          "--newline", // one progress update per line, not carriage-return overwrites
+          // Named from the real video title (yt-dlp sanitizes it for the
+          // filesystem automatically), not the video ID — so what you save
+          // to disk actually reads as the video, not "import-<uuid>".
+          "-o", "%(title).200B.%(ext)s",
+          url,
+        ];
+
+    const child = spawn("yt-dlp", args, { cwd });
 
     let stallTimer;
     const resetStallTimer = () => {

@@ -1,10 +1,13 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { Download, Link2, Loader2, ListVideo } from "lucide-react";
+import { Download, Link2, ListVideo, Loader2, Music, Video } from "lucide-react";
 import toast from "react-hot-toast";
+import { cn } from "@/lib/utils";
 import { buildClipsFromFiles } from "@/lib/buildClips";
 import { useClipStore } from "@/stores/useClipStore";
 import type { TranscriptCue } from "@/types/clip";
+
+type MediaType = "video" | "audio";
 
 const IMPORT_SERVER_URL = "http://localhost:4321";
 
@@ -62,6 +65,7 @@ function formatDuration(seconds: number | null): string {
 export const UrlImport = () => {
   const addClips = useClipStore((s) => s.addClips);
   const [url, setUrl] = useState("");
+  const [mediaType, setMediaType] = useState<MediaType>("video");
   const [ownsRights, setOwnsRights] = useState(false);
   const [checking, setChecking] = useState(false);
   const [entries, setEntries] = useState<SelectableEntry[]>([]);
@@ -77,7 +81,7 @@ export const UrlImport = () => {
     const startRes = await fetch(`${IMPORT_SERVER_URL}/api/import-jobs`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url: videoUrl }),
+      body: JSON.stringify({ url: videoUrl, mediaType }),
     });
     if (!startRes.ok) {
       const body = await startRes.json().catch(() => null);
@@ -114,8 +118,10 @@ export const UrlImport = () => {
     }
 
     const disposition = fileRes.headers.get("Content-Disposition") || "";
-    const filename = parseFilename(disposition) || "imported-video.mp4";
-    const contentType = fileRes.headers.get("Content-Type") || "video/mp4";
+    const filename =
+      parseFilename(disposition) || (mediaType === "audio" ? "imported-audio.mp3" : "imported-video.mp4");
+    const contentType =
+      fileRes.headers.get("Content-Type") || (mediaType === "audio" ? "audio/mpeg" : "video/mp4");
     const totalBytes = Number(fileRes.headers.get("Content-Length")) || 0;
     const reader = fileRes.body?.getReader();
 
@@ -258,6 +264,33 @@ export const UrlImport = () => {
 
       {entries.length === 0 ? (
         <>
+          <div className="flex w-fit rounded-lg border border-border p-1">
+            <button
+              type="button"
+              onClick={() => setMediaType("video")}
+              className={cn(
+                "flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-semibold transition-colors",
+                mediaType === "video"
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              <Video size={14} /> Video
+            </button>
+            <button
+              type="button"
+              onClick={() => setMediaType("audio")}
+              className={cn(
+                "flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-semibold transition-colors",
+                mediaType === "audio"
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              <Music size={14} /> Audio only (mp3)
+            </button>
+          </div>
+
           <div className="flex gap-2">
             <input
               type="url"

@@ -4,16 +4,46 @@ export function readMediaDuration(file: File, type: ClipType): Promise<number> {
   return new Promise((resolve, reject) => {
     const el = document.createElement(type === "video" ? "video" : "audio");
     const url = URL.createObjectURL(file);
+    let settled = false;
+
+    const finish = (duration: number) => {
+      if (settled) return;
+      settled = true;
+      URL.revokeObjectURL(url);
+      resolve(Number.isFinite(duration) ? duration : 0);
+    };
+
     el.preload = "metadata";
     el.src = url;
+
     el.onloadedmetadata = () => {
-      URL.revokeObjectURL(url);
-      resolve(el.duration);
+      if (Number.isFinite(el.duration)) {
+        finish(el.duration);
+        return;
+      }
+      // Some encodes (notably MP3s without a Xing/LAME header — including
+      // ffmpeg's default output, which is what yt-dlp's audio extraction
+      // produces) report duration as Infinity/NaN until the browser is
+      // forced to seek. This is the standard workaround; without it this
+      // promise would otherwise hang forever on those files.
+      el.currentTime = Number.MAX_SAFE_INTEGER;
+      el.ontimeupdate = () => {
+        el.ontimeupdate = null;
+        el.currentTime = 0;
+        finish(el.duration);
+      };
     };
+
     el.onerror = () => {
+      if (settled) return;
+      settled = true;
       URL.revokeObjectURL(url);
       reject(new Error(`Could not read metadata for ${file.name}`));
     };
+
+    // Absolute fallback — never let an import hang indefinitely on a file
+    // with unusual/missing metadata.
+    setTimeout(() => finish(el.duration), 8000);
   });
 }
 
