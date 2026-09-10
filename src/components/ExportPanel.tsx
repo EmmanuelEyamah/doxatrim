@@ -7,10 +7,11 @@ import { MediaPlayer } from "@/components/MediaPlayer";
 import { useFFmpeg } from "@/hooks/useFFmpeg";
 import { useClipStore } from "@/stores/useClipStore";
 import { useAudioLayerStore } from "@/stores/useAudioLayerStore";
-import { trimClip } from "@/lib/ffmpeg/trim";
+import { makeGapSegment, trimSegment } from "@/lib/ffmpeg/trim";
 import { concatClips, readAndCleanup } from "@/lib/ffmpeg/concat";
 import { mixAudioLayers } from "@/lib/ffmpeg/mix";
-import { isLayerActive, measuredTimeline, timelineEnd } from "@/lib/timeline";
+import { smoothJoins } from "@/lib/ffmpeg/smooth";
+import { computeEdl, isLayerActive, measuredTimeline, timelineEnd } from "@/lib/timeline";
 import type { OutputFormat } from "@/types/project";
 
 type AudioFormat = "mp3" | "wav";
@@ -32,10 +33,12 @@ function describeError(err: unknown): string {
 
 export const ExportPanel = () => {
   const clips = useClipStore((s) => s.clips);
+  const joinCrossfade = useClipStore((s) => s.joinCrossfade);
   const layers = useAudioLayerStore((s) => s.layers);
   const mainVolume = useAudioLayerStore((s) => s.mainVolume);
   const { ffmpeg, loaded, loading, progress, error: loadError } = useFFmpeg();
   const [exporting, setExporting] = useState(false);
+  const [stage, setStage] = useState<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
   const [outputUrl, setOutputUrl] = useState<string | null>(null);
   const [exportAs, setExportAs] = useState<ExportAs>("video");
@@ -45,13 +48,16 @@ export const ExportPanel = () => {
 
   const projectType = clips[0].type;
   const dropVideo = projectType === "video" && exportAs === "audio";
-  const outputFormat: OutputFormat =
-    projectType === "video" && exportAs === "video" ? "mp4" : audioFormat;
+  const outputFormat: OutputFormat = projectType === "video" && exportAs === "video" ? "mp4" : audioFormat;
   const end = timelineEnd(clips);
+  const segments = computeEdl(clips);
+  const gapCount = segments.filter((s) => !s.clipId).length;
+  const joinCount = segments.filter((s, i) => i > 0 && s.clipId && segments[i - 1].clipId).length;
+  const smoothing = joinCrossfade > 0 && joinCount > 0;
   const activeLayerCount = layers.filter((l) => isLayerActive(l, end)).length;
   const needsMix = activeLayerCount > 0 || dropVideo || mainVolume !== 1;
   const extensions = new Set(clips.map((c) => c.file.name.split(".").pop()?.toLowerCase()));
-  const formatMismatch = extensions.size > 1;
+  const formatMismatch = extensions.size > 1 || gapCount > 0;
   const layerBytes = layers.reduce((sum, l) => sum + l.file.size, 0);
   const exportFilename = `${baseName(clips[0].file.name)} (edited).${outputFormat}`;
 
@@ -69,23 +75,48 @@ export const ExportPanel = () => {
     setOutputUrl(null);
 
     try {
-      const segments: string[] = [];
-      const measured: number[] = [];
-      for (let i = 0; i < clips.length; i++) {
-        const segment = await trimClip(ffmpeg, clips[i], i);
-        segments.push(segment.name);
-        measured.push(segment.duration);
-      }
       // The concat container follows the source type; the mix stage handles
       // dropping video when exporting a video project as audio.
       const concatFormat: OutputFormat = projectType === "video" ? "mp4" : audioFormat;
-      let outputName = await concatClips(ffmpeg, segments, concatFormat);
+      const sized = clips.find((c) => c.width && c.height);
+      const dims = { width: sized?.width ?? 1280, height: sized?.height ?? 720 };
+
+      const names: string[] = [];
+      const measured: number[] = [];
+      for (let i = 0; i < segments.length; i++) {
+        const seg = segments[i];
+        setStage(`Cutting ${i + 1}/${segments.length}`);
+        const len = seg.end - seg.start;
+        const clip = seg.clipId ? clips.find((c) => c.id === seg.clipId) : undefined;
+        const piece = clip
+          ? await trimSegment(ffmpeg, clip.file, seg.srcIn, seg.srcIn + len, i)
+          : await makeGapSegment(ffmpeg, i, { duration: len, format: concatFormat, ...dims });
+        names.push(piece.name);
+        measured.push(piece.duration);
+      }
+
+      setStage("Joining");
+      let outputName = await concatClips(ffmpeg, names, concatFormat);
+
+      if (smoothing) {
+        setStage(`Smoothing ${joinCount} join${joinCount > 1 ? "s" : ""}`);
+        outputName = await smoothJoins(ffmpeg, {
+          segments,
+          measured,
+          clips,
+          concatOutputName: outputName,
+          crossfade: joinCrossfade,
+          outputFormat: concatFormat,
+          audioOnly: projectType === "audio",
+        });
+      }
 
       if (needsMix) {
-        // Main trims are keyframe-snapped (video is never re-encoded), so the
+        setStage(activeLayerCount > 0 ? `Mixing ${activeLayerCount} layer${activeLayerCount > 1 ? "s" : ""}` : "Finishing");
+        // Segment cuts are keyframe-snapped (video is never re-encoded), so the
         // exported sequence can run a little longer than the on-screen timeline.
         // Place layers against the measured export timeline, not the ideal one.
-        const { actualEnd, toActual } = measuredTimeline(clips, measured);
+        const { actualEnd, toActual } = measuredTimeline(segments, measured);
         const placedLayers = layers.map((l) => ({
           ...l,
           startAt: toActual(l.startAt),
@@ -102,8 +133,7 @@ export const ExportPanel = () => {
       }
 
       const data = await readAndCleanup(ffmpeg, outputName);
-      const mime =
-        outputFormat === "mp4" ? "video/mp4" : outputFormat === "wav" ? "audio/wav" : "audio/mpeg";
+      const mime = outputFormat === "mp4" ? "video/mp4" : outputFormat === "wav" ? "audio/wav" : "audio/mpeg";
       setOutputUrl(URL.createObjectURL(new Blob([data], { type: mime })));
     } catch (err) {
       const message = describeError(err);
@@ -111,6 +141,7 @@ export const ExportPanel = () => {
       toast.error(message);
     } finally {
       setExporting(false);
+      setStage(null);
     }
   };
 
@@ -133,9 +164,7 @@ export const ExportPanel = () => {
                 onClick={() => setExportAs("video")}
                 className={cn(
                   "flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-semibold transition-colors",
-                  exportAs === "video"
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:text-foreground"
+                  exportAs === "video" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
                 )}
               >
                 <Video size={14} /> Video
@@ -145,9 +174,7 @@ export const ExportPanel = () => {
                 onClick={() => setExportAs("audio")}
                 className={cn(
                   "flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-semibold transition-colors",
-                  exportAs === "audio"
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:text-foreground"
+                  exportAs === "audio" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
                 )}
               >
                 <AudioLines size={14} /> Audio only
@@ -167,31 +194,31 @@ export const ExportPanel = () => {
         </div>
       </div>
 
-      {activeLayerCount > 0 && (
-        <p className="text-xs text-muted-foreground">
-          Mixing {activeLayerCount} audio layer{activeLayerCount > 1 ? "s" : ""} into the output
-          {dropVideo ? " (audio only)" : ""}. Video is copied as-is, never re-encoded.
-        </p>
-      )}
+      <p className="text-xs text-muted-foreground">
+        Renders the whole timeline — {segments.filter((s) => s.clipId).length} clip piece
+        {segments.filter((s) => s.clipId).length === 1 ? "" : "s"}
+        {gapCount > 0 ? `, ${gapCount} empty gap${gapCount > 1 ? "s" : ""} (black + silence)` : ""}
+        {activeLayerCount > 0 ? `, ${activeLayerCount} audio layer${activeLayerCount > 1 ? "s" : ""} mixed in` : ""}
+        {smoothing ? `, ${joinCount} join${joinCount > 1 ? "s" : ""} smoothed with a ${joinCrossfade.toFixed(1)}s audio crossfade` : ""}
+        {dropVideo ? " — as audio only" : ""}. Video is copied as-is, never re-encoded.
+      </p>
 
       {layerBytes > LARGE_LAYER_BYTES && (
         <p className="text-xs text-warning">
-          Audio layers total {(layerBytes / 1e6).toFixed(0)} MB of source files — every layer is
-          copied into the browser's ffmpeg memory during export, so very large sources (whole
-          videos used just for their audio) can run out of memory. Audio-only files are much
-          lighter.
+          Audio layers total {(layerBytes / 1e6).toFixed(0)} MB of source files — every layer is copied into the
+          browser's ffmpeg memory during export, so very large sources can run out of memory. Audio-only files
+          are much lighter.
         </p>
       )}
 
       {formatMismatch && (
         <p className="text-xs text-warning">
-          Clips have different file types — export will re-encode to match, which is slower.
+          {gapCount > 0 ? "Empty gaps or " : ""}Clips of different file types may need a re-encode to join — slower, but
+          done at high quality.
         </p>
       )}
 
-      {loadError && (
-        <p className="text-xs text-destructive">ffmpeg failed to load: {loadError}</p>
-      )}
+      {loadError && <p className="text-xs text-destructive">ffmpeg failed to load: {loadError}</p>}
 
       <button
         type="button"
@@ -202,7 +229,7 @@ export const ExportPanel = () => {
         {exporting ? (
           <>
             <Loader2 size={16} className="animate-spin" />
-            Exporting… {Math.round(progress * 100)}%
+            {stage ?? "Exporting"}… {Math.round(progress * 100)}%
           </>
         ) : loading ? (
           "Loading ffmpeg…"

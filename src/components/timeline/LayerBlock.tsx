@@ -1,10 +1,8 @@
 import { useRef } from "react";
-import { motion } from "framer-motion";
 import { Repeat, Video } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatTime } from "@/lib/formatTime";
 import { layerSpan } from "@/lib/timeline";
-import { snapTime } from "@/lib/snap";
 import { getClipType } from "@/lib/fileValidation";
 import type { AudioLayer } from "@/types/audioLayer";
 import { usePointerDrag } from "@/components/timeline/usePointerDrag";
@@ -13,28 +11,33 @@ import type { TimelineScale } from "@/components/timeline/useTimelineScale";
 export const AUDIO_LANE_HEIGHT = 48;
 export const LANE_COLORS = ["var(--chart-1)", "var(--chart-3)", "var(--chart-5)", "var(--chart-4)", "var(--chart-2)"];
 
-const SNAP_PX = 8;
+export interface LayerDragHandlers {
+  onDragStart: (id: string, additive: boolean) => void;
+  onDrag: (dt: number) => void;
+  onDragEnd: () => void;
+}
 
 interface LayerBlockProps {
   layer: AudioLayer;
   timelineEnd: number;
   scale: TimelineScale;
   selected: boolean;
-  snapEnabled: boolean;
-  /** Timeline seconds worth snapping to (clip boundaries, other layers, playhead). */
-  snapTargets: number[];
-  onSelect: () => void;
+  snap: (t: number, shiftKey: boolean) => number;
+  drag: LayerDragHandlers;
+  onSelect: (additive: boolean) => void;
   onChange: (patch: Partial<Omit<AudioLayer, "id" | "file">>) => void;
   onContextMenu?: (e: React.MouseEvent) => void;
 }
+
+const additiveOf = (e: { shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }) => e.shiftKey || e.metaKey || e.ctrlKey;
 
 export const LayerBlock = ({
   layer,
   timelineEnd,
   scale,
   selected,
-  snapEnabled,
-  snapTargets,
+  snap,
+  drag,
   onSelect,
   onChange,
   onContextMenu,
@@ -44,35 +47,30 @@ export const LayerBlock = ({
   const segment = layer.outPoint - layer.inPoint;
   const isVideoSource = getClipType(layer.file) === "video";
 
-  const snap = (t: number, shiftKey: boolean) =>
-    snapEnabled && !shiftKey ? snapTime(t, snapTargets, SNAP_PX / scale.pxPerSec) : t;
-
   const capture = () => {
-    startRef.current = {
-      startAt: layer.startAt,
-      inPoint: layer.inPoint,
-      outPoint: layer.outPoint,
-      endAt: layer.endAt,
-      span,
-    };
-    onSelect();
+    startRef.current = { startAt: layer.startAt, inPoint: layer.inPoint, outPoint: layer.outPoint, endAt: layer.endAt, span };
   };
 
-  // Body: move the whole block along the timeline.
+  // Body: move the whole block (and everything else selected) along the timeline.
   const onBodyDown = usePointerDrag({
-    onStart: capture,
+    onStart: (e) => {
+      capture();
+      drag.onDragStart(layer.id, additiveOf(e));
+    },
     onMove: (dx, _dy, e) => {
       const s = startRef.current;
       const raw = s.startAt + scale.xToTime(dx);
-      const startAt = Math.max(0, Math.min(snap(raw, e.shiftKey), Math.max(0, timelineEnd - 0.05)));
-      const shift = startAt - s.startAt;
-      onChange({ startAt, endAt: s.endAt == null ? null : Math.min(timelineEnd, s.endAt + shift) });
+      drag.onDrag(Math.max(-s.startAt, snap(raw, e.shiftKey) - s.startAt));
     },
+    onEnd: () => drag.onDragEnd(),
   });
 
   // Left edge: trim the head — inPoint and startAt move together so the audio stays aligned.
   const onLeftDown = usePointerDrag({
-    onStart: capture,
+    onStart: (e) => {
+      capture();
+      onSelect(additiveOf(e));
+    },
     onMove: (dx, _dy, e) => {
       const s = startRef.current;
       const rawStart = snap(s.startAt + scale.xToTime(dx), e.shiftKey);
@@ -85,7 +83,10 @@ export const LayerBlock = ({
 
   // Right edge: looped → where the loop stops; play-once → the source outPoint.
   const onRightDown = usePointerDrag({
-    onStart: capture,
+    onStart: (e) => {
+      capture();
+      onSelect(additiveOf(e));
+    },
     onMove: (dx, _dy, e) => {
       const s = startRef.current;
       const rawEnd = snap(s.startAt + s.span + scale.xToTime(dx), e.shiftKey);
@@ -93,10 +94,7 @@ export const LayerBlock = ({
         onChange({ endAt: Math.min(timelineEnd, Math.max(s.startAt + 0.05, rawEnd)) });
       } else {
         const outPoint = s.inPoint + (rawEnd - s.startAt);
-        onChange({
-          outPoint: Math.min(layer.sourceDuration, Math.max(s.inPoint + 0.05, outPoint)),
-          endAt: null,
-        });
+        onChange({ outPoint: Math.min(layer.sourceDuration, Math.max(s.inPoint + 0.05, outPoint)), endAt: null });
       }
     },
   });
@@ -111,11 +109,9 @@ export const LayerBlock = ({
   }
 
   return (
-    <motion.div
-      layout
+    <div
       onPointerDown={onBodyDown}
       onClick={(e) => e.stopPropagation()}
-      onDoubleClick={onSelect}
       onContextMenu={onContextMenu}
       className={cn(
         "group absolute top-1 bottom-1 cursor-grab select-none overflow-hidden rounded-md border active:cursor-grabbing",
@@ -134,14 +130,8 @@ export const LayerBlock = ({
         <span className="truncate drop-shadow">{layer.name}</span>
         <span className="ml-auto shrink-0 font-mono opacity-80">{formatTime(span).slice(0, 5)}</span>
       </div>
-      <div
-        onPointerDown={onLeftDown}
-        className="absolute inset-y-0 left-0 w-2 cursor-ew-resize bg-white/0 hover:bg-white/30"
-      />
-      <div
-        onPointerDown={onRightDown}
-        className="absolute inset-y-0 right-0 w-2 cursor-ew-resize bg-white/0 hover:bg-white/30"
-      />
-    </motion.div>
+      <div onPointerDown={onLeftDown} className="absolute inset-y-0 left-0 w-2 cursor-ew-resize bg-white/0 hover:bg-white/30" />
+      <div onPointerDown={onRightDown} className="absolute inset-y-0 right-0 w-2 cursor-ew-resize bg-white/0 hover:bg-white/30" />
+    </div>
   );
 };

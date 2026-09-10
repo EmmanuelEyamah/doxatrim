@@ -6,13 +6,14 @@ import { useSettingsStore } from "@/stores/useSettingsStore";
 import { useSequencePlayer } from "@/hooks/useSequencePlayer";
 import { useMixPreview } from "@/hooks/useMixPreview";
 import { clipLocalToTimeline, timelineEnd } from "@/lib/timeline";
+import { EMPTY_SELECTION, isEmptySelection, only, singleItem, type Selection } from "@/lib/selection";
 import { TopBar } from "@/components/shell/TopBar";
 import { MediaPanel } from "@/components/shell/MediaPanel";
 import { Inspector } from "@/components/shell/Inspector";
 import { ExportDialog } from "@/components/shell/ExportDialog";
 import { SequencePreview } from "@/components/SequencePreview";
 import { TranscriptModal } from "@/components/TranscriptModal";
-import { MixTimeline, type Selection } from "@/components/timeline/MixTimeline";
+import { MixTimeline } from "@/components/timeline/MixTimeline";
 import { usePointerDrag } from "@/components/timeline/usePointerDrag";
 
 function baseName(filename: string): string {
@@ -43,10 +44,10 @@ export const EditorShell = () => {
   const player = useSequencePlayer(clips);
   const preview = useMixPreview(player, layers, mainVolume, timelineEnd(clips));
 
-  const [selection, setSelection] = useState<Selection>(null);
+  const [selection, setSelection] = useState<Selection>(EMPTY_SELECTION);
   const [exportOpen, setExportOpen] = useState(false);
   const [transcriptOpen, setTranscriptOpen] = useState(false);
-  const [timelineHeight, setTimelineHeight] = useState(260);
+  const [timelineHeight, setTimelineHeight] = useState(280);
   const prevClipCount = useRef(0);
   const dragStart = useRef({ left: leftWidth, right: rightWidth });
 
@@ -63,39 +64,41 @@ export const EditorShell = () => {
     onMove: (dx) => setRightWidth(dragStart.current.right - dx),
   });
 
-  // Selecting a clip jumps the monitor to it; first import selects that clip.
+  // Selecting exactly one clip jumps the monitor to it; the first import selects that clip.
+  const single = singleItem(selection);
+  const singleClipId = single?.kind === "clip" ? single.id : null;
   const { seekToClip } = player;
   useEffect(() => {
-    if (selection?.kind === "clip") seekToClip(selection.id);
-  }, [selection, seekToClip]);
+    if (singleClipId) seekToClip(singleClipId);
+  }, [singleClipId, seekToClip]);
 
   useEffect(() => {
-    if (prevClipCount.current === 0 && clips.length > 0 && !selection) {
-      setSelection({ kind: "clip", id: clips[0].id });
+    if (prevClipCount.current === 0 && clips.length > 0 && isEmptySelection(selection)) {
+      setSelection(only("clip", clips[0].id));
     }
     prevClipCount.current = clips.length;
   }, [clips, selection]);
 
-  // Drop a selection whose target no longer exists.
+  // Drop selected ids whose items no longer exist.
   useEffect(() => {
-    if (!selection) return;
-    const exists =
-      selection.kind === "clip" ? clips.some((c) => c.id === selection.id) : layers.some((l) => l.id === selection.id);
-    if (!exists) setSelection(null);
+    const clipIds = new Set(clips.map((c) => c.id));
+    const layerIds = new Set(layers.map((l) => l.id));
+    const nextClips = selection.clips.filter((id) => clipIds.has(id));
+    const nextLayers = selection.layers.filter((id) => layerIds.has(id));
+    if (nextClips.length !== selection.clips.length || nextLayers.length !== selection.layers.length) {
+      setSelection({ clips: nextClips, layers: nextLayers });
+    }
   }, [clips, layers, selection]);
 
-  const selectedClip = selection?.kind === "clip" ? clips.find((c) => c.id === selection.id) : undefined;
+  const selectedClip = singleClipId ? clips.find((c) => c.id === singleClipId) : undefined;
   const projectName = clips[0] ? baseName(clips[0].file.name) : "Untitled project";
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background text-foreground">
       <TopBar projectName={projectName} canExport={clips.length > 0} onExport={() => setExportOpen(true)} />
 
-      <div
-        className="grid min-h-0 flex-1"
-        style={{ gridTemplateColumns: `${leftWidth}px 4px minmax(0, 1fr) 4px ${rightWidth}px` }}
-      >
-        <MediaPanel onLayerAdded={(id) => setSelection({ kind: "layer", id })} />
+      <div className="grid min-h-0 flex-1" style={{ gridTemplateColumns: `${leftWidth}px 4px minmax(0, 1fr) 4px ${rightWidth}px` }}>
+        <MediaPanel onLayerAdded={(id) => setSelection(only("layer", id))} />
         <Gutter onPointerDown={onLeftGutter} />
 
         <section className="flex min-h-0 min-w-0 flex-col items-center justify-center overflow-y-auto bg-background p-4">
@@ -109,12 +112,7 @@ export const EditorShell = () => {
         </section>
 
         <Gutter onPointerDown={onRightGutter} />
-        <Inspector
-          selection={selection}
-          player={player}
-          onSelect={setSelection}
-          onOpenTranscript={() => setTranscriptOpen(true)}
-        />
+        <Inspector selection={selection} player={player} onSelect={setSelection} onOpenTranscript={() => setTranscriptOpen(true)} />
       </div>
 
       <MixTimeline

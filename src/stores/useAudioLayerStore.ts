@@ -7,12 +7,13 @@ const MIN_PIECE = 0.05;
 interface AudioLayerStore {
   layers: AudioLayer[];
   mainVolume: number; // 0..1, the main timeline's own audio
-  selectedLayerId: string | null;
   addLayer: (file: File, sourceDuration: number, name?: string) => AudioLayer;
+  /** Inserts ready-made layers (copies) after the given layer id, or at the end. */
+  insertLayers: (layers: AudioLayer[], afterId?: string) => void;
   removeLayer: (id: string) => void;
+  removeLayers: (ids: string[]) => void;
   updateLayer: (id: string, patch: Partial<Omit<AudioLayer, "id" | "file">>) => void;
   setMainVolume: (volume: number) => void;
-  selectLayer: (id: string | null) => void;
   /** Cuts a layer in two at a timeline time. A looped layer restarts its loop at the cut. */
   splitLayer: (id: string, at: number, timelineEnd: number) => void;
   /** Places `count` copies back to back after the layer, on new lanes. */
@@ -22,7 +23,6 @@ interface AudioLayerStore {
 export const useAudioLayerStore = create<AudioLayerStore>()((set, get) => ({
   layers: [],
   mainVolume: 1,
-  selectedLayerId: null,
 
   addLayer: (file, sourceDuration, name) => {
     const layer: AudioLayer = {
@@ -39,15 +39,24 @@ export const useAudioLayerStore = create<AudioLayerStore>()((set, get) => ({
       muted: false,
       colorIndex: get().layers.length % 5,
     };
-    set((s) => ({ layers: [...s.layers, layer], selectedLayerId: layer.id }));
+    set((s) => ({ layers: [...s.layers, layer] }));
     return layer;
   },
 
-  removeLayer: (id) =>
-    set((s) => ({
-      layers: s.layers.filter((l) => l.id !== id),
-      selectedLayerId: s.selectedLayerId === id ? null : s.selectedLayerId,
-    })),
+  insertLayers: (newLayers, afterId) =>
+    set((s) => {
+      const idx = afterId ? s.layers.findIndex((l) => l.id === afterId) : -1;
+      const at = idx === -1 ? s.layers.length : idx + 1;
+      return { layers: [...s.layers.slice(0, at), ...newLayers, ...s.layers.slice(at)] };
+    }),
+
+  removeLayer: (id) => set((s) => ({ layers: s.layers.filter((l) => l.id !== id) })),
+
+  removeLayers: (ids) =>
+    set((s) => {
+      const gone = new Set(ids);
+      return { layers: s.layers.filter((l) => !gone.has(l.id)) };
+    }),
 
   updateLayer: (id, patch) =>
     set((s) => ({
@@ -55,8 +64,6 @@ export const useAudioLayerStore = create<AudioLayerStore>()((set, get) => ({
     })),
 
   setMainVolume: (mainVolume) => set({ mainVolume }),
-
-  selectLayer: (id) => set({ selectedLayerId: id }),
 
   splitLayer: (id, at, timelineEnd) =>
     set((s) => {
@@ -74,10 +81,7 @@ export const useAudioLayerStore = create<AudioLayerStore>()((set, get) => ({
         ? { ...layer, id: crypto.randomUUID(), startAt: at }
         : { ...layer, id: crypto.randomUUID(), startAt: at, inPoint: layer.inPoint + local };
 
-      return {
-        layers: [...s.layers.slice(0, idx), head, tail, ...s.layers.slice(idx + 1)],
-        selectedLayerId: head.id,
-      };
+      return { layers: [...s.layers.slice(0, idx), head, tail, ...s.layers.slice(idx + 1)] };
     }),
 
   duplicateLayer: (id, count, timelineEnd) =>

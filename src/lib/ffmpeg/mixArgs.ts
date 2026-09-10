@@ -109,3 +109,58 @@ export function buildMixArgs(o: BuildMixArgsOptions): string[] {
 
   return ["-y", ...inputs, ...output];
 }
+
+// ── Smooth joins: audio crossfade at every cut, video untouched ──
+
+export interface CrossfadeInput {
+  name: string;
+  /** Seconds of overlap with the NEXT input (0 = hard join). */
+  overlapWithNext: number;
+}
+
+export interface BuildSmoothArgsOptions {
+  /** Audio pieces in timeline order, already cut with handle media on each side of a join. */
+  audioInputs: CrossfadeInput[];
+  /** File whose video stream is copied through; null when the result is audio-only. */
+  videoInputName: string | null;
+  outputFormat: MixOutputFormat;
+  outputName: string;
+}
+
+/**
+ * Chains the audio pieces with `acrossfade` where there is overlap (a real
+ * join with handle media) and plain `concat` where there isn't (gaps, source
+ * boundaries). Each piece is normalised to the same rate/layout first so
+ * mixed sources can be joined. Total length = Σ(pieces) − Σ(overlaps), which
+ * the caller arranges to equal the video's length exactly.
+ */
+export function buildSmoothArgs(o: BuildSmoothArgsOptions): string[] {
+  const args: string[] = ["-y"];
+  for (const input of o.audioInputs) args.push("-i", input.name);
+  if (o.videoInputName) args.push("-i", o.videoInputName);
+
+  const n = o.audioInputs.length;
+  const parts: string[] = [];
+  for (let k = 0; k < n; k++) {
+    parts.push(`[${k}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[s${k}]`);
+  }
+  let current = "[s0]";
+  for (let k = 1; k < n; k++) {
+    const overlap = o.audioInputs[k - 1].overlapWithNext;
+    const out = `[j${k}]`;
+    parts.push(
+      overlap > 0.01
+        ? `${current}[s${k}]acrossfade=d=${overlap.toFixed(3)}:c1=tri:c2=tri${out}`
+        : `${current}[s${k}]concat=n=2:v=0:a=1${out}`
+    );
+    current = out;
+  }
+  parts.push(`${current}anull[aout]`);
+
+  args.push("-filter_complex", parts.join(";"));
+  if (o.videoInputName) args.push("-map", `${n}:v?`, "-c:v", "copy");
+  args.push("-map", "[aout]", ...audioCodecArgsFor(o.outputFormat));
+  if (o.videoInputName) args.push("-shortest");
+  args.push(o.outputName);
+  return args;
+}

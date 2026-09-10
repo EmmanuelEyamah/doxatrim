@@ -1,52 +1,57 @@
 import { create } from "zustand";
 import type { Clip, TranscriptCue } from "@/types/clip";
+import { clipLength, nextFreeStart } from "@/lib/timeline";
 
 const MIN_PIECE = 0.05;
 
+export interface ClipPlacement {
+  track?: number;
+  startAt?: number;
+}
+
 interface ClipStore {
   clips: Clip[];
-  selectedClipId: string | null;
-  addClips: (newClips: Clip[]) => void;
+  /** Audio crossfade at every cut between clips, in seconds (0 = hard cuts). Applied on export. */
+  joinCrossfade: number;
+  setJoinCrossfade: (seconds: number) => void;
+  /** Adds clips; without a placement each one is appended after the last clip on V1. */
+  addClips: (newClips: Clip[], placement?: ClipPlacement) => void;
   removeClip: (id: string) => void;
-  reorderClips: (fromIndex: number, toIndex: number) => void;
+  removeClips: (ids: string[]) => void;
   updateTrim: (id: string, inPoint: number, outPoint: number) => void;
-  selectClip: (id: string) => void;
+  updateClip: (id: string, patch: Partial<Omit<Clip, "id" | "file">>) => void;
   setTranscript: (id: string, transcript: TranscriptCue[]) => void;
   /** Cuts a clip in two at a source-local time; both halves keep the same file. */
   splitClip: (id: string, localTime: number) => void;
-  /** Inserts `count` copies right after the clip. */
+  /** Places `count` copies back to back after the clip, on its track. */
   duplicateClip: (id: string, count?: number) => void;
 }
 
-const reorder = (clips: Clip[]) => clips.map((c, i) => ({ ...c, order: i }));
+const withOrder = (clips: Clip[]) => clips.map((c, i) => ({ ...c, order: i }));
 
 export const useClipStore = create<ClipStore>()((set) => ({
   clips: [],
-  selectedClipId: null,
+  joinCrossfade: 0,
+  setJoinCrossfade: (seconds) => set({ joinCrossfade: Math.max(0, Math.min(2, seconds)) }),
 
-  addClips: (newClips) =>
+  addClips: (newClips, placement) =>
     set((s) => {
-      const clips = reorder([...s.clips, ...newClips]);
-      return {
-        clips,
-        selectedClipId: s.selectedClipId ?? clips[0]?.id ?? null,
-      };
+      const track = placement?.track ?? 0;
+      let cursor = placement?.startAt ?? nextFreeStart(s.clips, track);
+      const placed = newClips.map((c) => {
+        const clip = { ...c, track, startAt: cursor };
+        cursor += clipLength(clip);
+        return clip;
+      });
+      return { clips: withOrder([...s.clips, ...placed]) };
     }),
 
-  removeClip: (id) =>
-    set((s) => {
-      const clips = reorder(s.clips.filter((c) => c.id !== id));
-      const selectedClipId =
-        s.selectedClipId === id ? (clips[0]?.id ?? null) : s.selectedClipId;
-      return { clips, selectedClipId };
-    }),
+  removeClip: (id) => set((s) => ({ clips: withOrder(s.clips.filter((c) => c.id !== id)) })),
 
-  reorderClips: (fromIndex, toIndex) =>
+  removeClips: (ids) =>
     set((s) => {
-      const clips = [...s.clips];
-      const [moved] = clips.splice(fromIndex, 1);
-      clips.splice(toIndex, 0, moved);
-      return { clips: reorder(clips) };
+      const gone = new Set(ids);
+      return { clips: withOrder(s.clips.filter((c) => !gone.has(c.id))) };
     }),
 
   updateTrim: (id, inPoint, outPoint) =>
@@ -54,7 +59,8 @@ export const useClipStore = create<ClipStore>()((set) => ({
       clips: s.clips.map((c) => (c.id === id ? { ...c, inPoint, outPoint } : c)),
     })),
 
-  selectClip: (id) => set({ selectedClipId: id }),
+  updateClip: (id, patch) =>
+    set((s) => ({ clips: s.clips.map((c) => (c.id === id ? { ...c, ...patch } : c)) })),
 
   setTranscript: (id, transcript) =>
     set((s) => ({
@@ -68,15 +74,26 @@ export const useClipStore = create<ClipStore>()((set) => ({
       const clip = s.clips[idx];
       if (localTime <= clip.inPoint + MIN_PIECE || localTime >= clip.outPoint - MIN_PIECE) return {};
       const head = { ...clip, outPoint: localTime };
-      const tail = { ...clip, id: crypto.randomUUID(), inPoint: localTime };
-      return { clips: reorder([...s.clips.slice(0, idx), head, tail, ...s.clips.slice(idx + 1)]) };
+      const tail = {
+        ...clip,
+        id: crypto.randomUUID(),
+        inPoint: localTime,
+        startAt: clip.startAt + (localTime - clip.inPoint),
+      };
+      return { clips: withOrder([...s.clips.slice(0, idx), head, tail, ...s.clips.slice(idx + 1)]) };
     }),
 
   duplicateClip: (id, count = 1) =>
     set((s) => {
       const idx = s.clips.findIndex((c) => c.id === id);
       if (idx === -1 || count < 1) return {};
-      const copies = Array.from({ length: count }, () => ({ ...s.clips[idx], id: crypto.randomUUID() }));
-      return { clips: reorder([...s.clips.slice(0, idx + 1), ...copies, ...s.clips.slice(idx + 1)]) };
+      const clip = s.clips[idx];
+      const len = clipLength(clip);
+      const copies = Array.from({ length: count }, (_, k) => ({
+        ...clip,
+        id: crypto.randomUUID(),
+        startAt: clip.startAt + len * (k + 1),
+      }));
+      return { clips: withOrder([...s.clips.slice(0, idx + 1), ...copies, ...s.clips.slice(idx + 1)]) };
     }),
 }));

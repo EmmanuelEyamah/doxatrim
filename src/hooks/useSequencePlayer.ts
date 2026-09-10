@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Clip } from "@/types/clip";
-import { mainClipRanges, timelineEnd } from "@/lib/timeline";
+import { computeEdl, segmentAt, timelineEnd, type EdlSegment } from "@/lib/timeline";
 
 const BOUNDARY_EPS = 0.03;
 const EMIT_INTERVAL_MS = 40;
@@ -12,31 +12,41 @@ export interface SequencePlayer {
   playing: boolean;
   duration: number;
   activeClipId: string | null;
+  /** True while the playhead is over empty timeline (rendered as black + silence). */
+  inGap: boolean;
+  segments: EdlSegment[];
   play: () => void;
   pause: () => void;
   toggle: () => void;
   seek: (t: number) => void;
   seekToClip: (clipId: string) => void;
-  stepClip: (delta: 1 | -1) => void;
-  /** Live timeline position computed from the element (not throttled state). */
+  stepSegment: (delta: 1 | -1) => void;
+  /** Live timeline position computed from the element/gap clock (not throttled state). */
   getTimelineTimeNow: () => number;
   /** Clip-local element time if `clipId` is the clip currently loaded, else null. */
   localTimeFor: (clipId: string) => number | null;
 }
 
+interface GapClock {
+  startedAt: number; // performance.now() when the clock last (re)started
+  offset: number; // seconds already elapsed before that
+  running: boolean;
+}
+
 /**
- * Drives the project timeline through one media element: plays main clips
- * back to back (each from its inPoint to its outPoint), swapping the
- * element's source at clip boundaries, and exposes a single timeline clock
- * that the timeline UI and the audio-layer preview engine key off.
+ * Plays the project through one media element by walking the EDL: each
+ * segment is a piece of a clip (element plays its file from srcIn) or a gap
+ * (element paused, a wall-clock timer advances the playhead). Exposes a single
+ * timeline clock the timeline UI and the audio-layer preview engine key off.
  */
 export function useSequencePlayer(clips: Clip[]): SequencePlayer {
   const elRef = useRef<HTMLMediaElement | null>(null);
   const urls = useRef(new Map<string, string>());
   const clipsRef = useRef(clips);
-  const rangesRef = useRef(mainClipRanges(clips));
-  const durationRef = useRef(timelineEnd(clips));
-  const activeIndexRef = useRef(-1);
+  const segmentsRef = useRef<EdlSegment[]>([]);
+  const durationRef = useRef(0);
+  const segIndexRef = useRef(-1);
+  const gapRef = useRef<GapClock | null>(null);
   const wantPlayingRef = useRef(false);
   const pendingRef = useRef<{ localTime: number; autoplay: boolean } | null>(null);
   const rafRef = useRef<number | null>(null);
@@ -46,11 +56,12 @@ export function useSequencePlayer(clips: Clip[]): SequencePlayer {
   const [timelineTime, setTimelineTime] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [activeClipId, setActiveClipId] = useState<string | null>(null);
+  const [inGap, setInGap] = useState(false);
 
-  const ranges = useMemo(() => mainClipRanges(clips), [clips]);
+  const segments = useMemo(() => computeEdl(clips), [clips]);
   const duration = useMemo(() => timelineEnd(clips), [clips]);
   clipsRef.current = clips;
-  rangesRef.current = ranges;
+  segmentsRef.current = segments;
   durationRef.current = duration;
 
   const urlFor = useCallback((clip: Clip) => {
@@ -62,14 +73,18 @@ export function useSequencePlayer(clips: Clip[]): SequencePlayer {
     return url;
   }, []);
 
+  const gapElapsed = (g: GapClock) => g.offset + (g.running ? (performance.now() - g.startedAt) / 1000 : 0);
+
   const getTimelineTimeNow = useCallback(() => {
+    const seg = segmentsRef.current[segIndexRef.current];
+    if (!seg) return 0;
+    if (!seg.clipId) {
+      const g = gapRef.current;
+      return seg.start + Math.min(g ? gapElapsed(g) : 0, seg.end - seg.start);
+    }
     const el = elRef.current;
-    const idx = activeIndexRef.current;
-    const cs = clipsRef.current;
-    if (!el || idx < 0 || idx >= cs.length) return 0;
-    const clip = cs[idx];
-    const local = Math.min(Math.max(el.currentTime - clip.inPoint, 0), clip.outPoint - clip.inPoint);
-    return rangesRef.current[idx].start + local;
+    if (!el) return seg.start;
+    return seg.start + Math.min(Math.max(el.currentTime - seg.srcIn, 0), seg.end - seg.start);
   }, []);
 
   const stopLoop = useCallback(() => {
@@ -79,21 +94,35 @@ export function useSequencePlayer(clips: Clip[]): SequencePlayer {
     }
   }, []);
 
-  const loadClip = useCallback(
-    (index: number, localTime: number, autoplay: boolean) => {
+  const loadSegment = useCallback(
+    (index: number, offsetInSeg: number, autoplay: boolean) => {
       const el = elRef.current;
-      const cs = clipsRef.current;
-      if (!el || index < 0 || index >= cs.length) return;
-      const clip = cs[index];
-      const url = urlFor(clip);
-      activeIndexRef.current = index;
+      const segs = segmentsRef.current;
+      if (!el || index < 0 || index >= segs.length) return;
+      const seg = segs[index];
+      segIndexRef.current = index;
+
+      if (!seg.clipId) {
+        el.pause();
+        pendingRef.current = null;
+        gapRef.current = { startedAt: performance.now(), offset: offsetInSeg, running: autoplay };
+        setInGap(true);
+        setActiveClipId(null);
+        return;
+      }
+
+      gapRef.current = null;
+      setInGap(false);
+      const clip = clipsRef.current.find((c) => c.id === seg.clipId)!;
       setActiveClipId(clip.id);
+      const url = urlFor(clip);
+      const target = seg.srcIn + offsetInSeg;
       if (el.src !== url) {
-        pendingRef.current = { localTime, autoplay };
+        pendingRef.current = { localTime: target, autoplay };
         el.src = url;
         el.load();
       } else {
-        el.currentTime = localTime;
+        el.currentTime = target;
         if (autoplay) void el.play().catch(() => {});
         else el.pause();
       }
@@ -101,25 +130,39 @@ export function useSequencePlayer(clips: Clip[]): SequencePlayer {
     [urlFor]
   );
 
+  const finish = useCallback(() => {
+    elRef.current?.pause();
+    if (gapRef.current) gapRef.current.running = false;
+    wantPlayingRef.current = false;
+    setPlaying(false);
+    setTimelineTime(durationRef.current);
+  }, []);
+
   const frame = useCallback(() => {
     rafRef.current = null;
-    const el = elRef.current;
-    const cs = clipsRef.current;
-    const idx = activeIndexRef.current;
-    if (!el || idx < 0 || idx >= cs.length) return;
-    const clip = cs[idx];
+    const segs = segmentsRef.current;
+    const idx = segIndexRef.current;
+    const seg = segs[idx];
+    if (!seg) return;
 
-    // pendingRef guards the gap right after a src swap, when currentTime can
-    // still read the previous clip's position and would advance twice.
-    if (!pendingRef.current && el.currentTime >= clip.outPoint - BOUNDARY_EPS) {
-      if (idx + 1 < cs.length) {
-        loadClip(idx + 1, cs[idx + 1].inPoint, true);
-      } else {
-        el.pause();
-        wantPlayingRef.current = false;
-        setPlaying(false);
-        setTimelineTime(durationRef.current);
-        return;
+    const advance = () => {
+      if (idx + 1 < segs.length) loadSegment(idx + 1, 0, wantPlayingRef.current);
+      else finish();
+    };
+
+    if (!seg.clipId) {
+      const g = gapRef.current;
+      if (g && gapElapsed(g) >= seg.end - seg.start - BOUNDARY_EPS) {
+        advance();
+        if (!wantPlayingRef.current) return;
+      }
+    } else {
+      const el = elRef.current;
+      // pendingRef guards the gap right after a src swap, when currentTime can
+      // still read the previous clip's position and would advance twice.
+      if (el && !pendingRef.current && el.currentTime >= seg.srcIn + (seg.end - seg.start) - BOUNDARY_EPS) {
+        advance();
+        if (!wantPlayingRef.current) return;
       }
     }
 
@@ -129,25 +172,28 @@ export function useSequencePlayer(clips: Clip[]): SequencePlayer {
       setTimelineTime(getTimelineTimeNow());
     }
     if (wantPlayingRef.current) rafRef.current = requestAnimationFrame(frame);
-  }, [loadClip, getTimelineTimeNow]);
+  }, [loadSegment, finish, getTimelineTimeNow]);
 
   const play = useCallback(() => {
     const el = elRef.current;
-    const cs = clipsRef.current;
-    if (!el || cs.length === 0) return;
+    if (!el || segmentsRef.current.length === 0) return;
     wantPlayingRef.current = true;
     setPlaying(true);
-    if (activeIndexRef.current < 0 || getTimelineTimeNow() >= durationRef.current - BOUNDARY_EPS) {
-      loadClip(0, cs[0].inPoint, true);
+    if (segIndexRef.current < 0 || getTimelineTimeNow() >= durationRef.current - BOUNDARY_EPS) {
+      loadSegment(0, 0, true);
+    } else if (gapRef.current) {
+      gapRef.current = { ...gapRef.current, startedAt: performance.now(), running: true };
     } else {
       void el.play().catch(() => {});
     }
     if (rafRef.current == null) rafRef.current = requestAnimationFrame(frame);
-  }, [loadClip, frame, getTimelineTimeNow]);
+  }, [loadSegment, frame, getTimelineTimeNow]);
 
   const pause = useCallback(() => {
     wantPlayingRef.current = false;
     setPlaying(false);
+    const g = gapRef.current;
+    if (g && g.running) gapRef.current = { startedAt: performance.now(), offset: gapElapsed(g), running: false };
     elRef.current?.pause();
     stopLoop();
     setTimelineTime(getTimelineTimeNow());
@@ -160,42 +206,38 @@ export function useSequencePlayer(clips: Clip[]): SequencePlayer {
 
   const seek = useCallback(
     (t: number) => {
-      const cs = clipsRef.current;
-      const rs = rangesRef.current;
-      if (cs.length === 0) return;
+      const segs = segmentsRef.current;
+      if (segs.length === 0) return;
       const clamped = Math.min(Math.max(t, 0), durationRef.current);
-      let idx = rs.findIndex((r) => clamped >= r.start && clamped < r.end);
-      if (idx === -1) idx = cs.length - 1;
-      const clip = cs[idx];
-      const local = clip.inPoint + Math.min(clamped - rs[idx].start, clip.outPoint - clip.inPoint);
-      loadClip(idx, local, wantPlayingRef.current);
+      const idx = segmentAt(segs, clamped);
+      loadSegment(idx, Math.min(clamped - segs[idx].start, segs[idx].end - segs[idx].start), wantPlayingRef.current);
       setTimelineTime(clamped);
     },
-    [loadClip]
+    [loadSegment]
   );
 
   const seekToClip = useCallback(
     (clipId: string) => {
-      const idx = clipsRef.current.findIndex((c) => c.id === clipId);
-      if (idx !== -1) seek(rangesRef.current[idx].start);
+      const clip = clipsRef.current.find((c) => c.id === clipId);
+      if (clip) seek(clip.startAt);
     },
     [seek]
   );
 
-  const stepClip = useCallback(
+  const stepSegment = useCallback(
     (delta: 1 | -1) => {
-      const cs = clipsRef.current;
-      if (cs.length === 0) return;
-      const target = Math.min(Math.max(activeIndexRef.current + delta, 0), cs.length - 1);
-      seek(rangesRef.current[target].start);
+      const segs = segmentsRef.current;
+      if (segs.length === 0) return;
+      const target = Math.min(Math.max(segIndexRef.current + delta, 0), segs.length - 1);
+      seek(segs[target].start);
     },
     [seek]
   );
 
   const localTimeFor = useCallback((clipId: string) => {
     const el = elRef.current;
-    const idx = activeIndexRef.current;
-    if (!el || idx < 0 || clipsRef.current[idx]?.id !== clipId) return null;
+    const seg = segmentsRef.current[segIndexRef.current];
+    if (!el || !seg || seg.clipId !== clipId) return null;
     return el.currentTime;
   }, []);
 
@@ -217,15 +259,13 @@ export function useSequencePlayer(clips: Clip[]): SequencePlayer {
       el.addEventListener("loadedmetadata", onLoaded);
       detachRef.current = () => el.removeEventListener("loadedmetadata", onLoaded);
 
-      if (activeIndexRef.current < 0 && clipsRef.current.length > 0) {
-        loadClip(0, clipsRef.current[0].inPoint, false);
-      }
+      if (segIndexRef.current < 0 && segmentsRef.current.length > 0) loadSegment(0, 0, false);
     },
-    [getTimelineTimeNow, loadClip]
+    [getTimelineTimeNow, loadSegment]
   );
 
-  // React to clips changing (add/remove/reorder/trim): keep the active clip by
-  // id, release object URLs for removed clips, and reset when the sequence empties.
+  // Clips changed (add/remove/move/trim): release URLs of removed clips and
+  // re-resolve the current position against the new EDL.
   useEffect(() => {
     const ids = new Set(clips.map((c) => c.id));
     for (const [id, url] of urls.current) {
@@ -237,9 +277,11 @@ export function useSequencePlayer(clips: Clip[]): SequencePlayer {
     const el = elRef.current;
     if (!el) return;
 
-    if (clips.length === 0) {
-      activeIndexRef.current = -1;
+    if (segments.length === 0) {
+      segIndexRef.current = -1;
+      gapRef.current = null;
       setActiveClipId(null);
+      setInGap(false);
       wantPlayingRef.current = false;
       setPlaying(false);
       stopLoop();
@@ -249,18 +291,20 @@ export function useSequencePlayer(clips: Clip[]): SequencePlayer {
       return;
     }
 
-    const idx = activeClipId ? clips.findIndex((c) => c.id === activeClipId) : -1;
-    if (idx === -1) {
-      wantPlayingRef.current = false;
-      setPlaying(false);
-      stopLoop();
-      loadClip(0, clips[0].inPoint, false);
-      setTimelineTime(0);
-    } else {
-      activeIndexRef.current = idx;
-      if (!wantPlayingRef.current) setTimelineTime(getTimelineTimeNow());
-    }
-  }, [clips, activeClipId, loadClip, stopLoop, getTimelineTimeNow]);
+    const t = segIndexRef.current < 0 ? 0 : Math.min(getTimelineTimeNow(), duration);
+    const idx = segmentAt(segments, t);
+    const seg = segments[idx];
+    const offset = Math.min(Math.max(t - seg.start, 0), seg.end - seg.start);
+    // Only reload when the resolved segment actually differs from what's playing.
+    const current = segmentsRef.current[segIndexRef.current];
+    const same =
+      current && seg.clipId === current.clipId && seg.clipId !== null &&
+      Math.abs(seg.srcIn + offset - (elRef.current?.currentTime ?? -1)) < 0.25;
+    if (!same) loadSegment(idx, offset, wantPlayingRef.current);
+    else segIndexRef.current = idx;
+    setTimelineTime(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [segments]);
 
   useEffect(
     () => () => {
@@ -278,12 +322,14 @@ export function useSequencePlayer(clips: Clip[]): SequencePlayer {
     playing,
     duration,
     activeClipId,
+    inGap,
+    segments,
     play,
     pause,
     toggle,
     seek,
     seekToClip,
-    stepClip,
+    stepSegment,
     getTimelineTimeNow,
     localTimeFor,
   };

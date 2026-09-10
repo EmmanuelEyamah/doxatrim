@@ -1,18 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import {
-  AudioLines,
-  Maximize,
-  Pause,
-  Play,
-  SkipBack,
-  SkipForward,
-  Volume2,
-  VolumeX,
-} from "lucide-react";
+import { AudioLines, Maximize, Pause, Play, SkipBack, SkipForward, Volume2, VolumeX } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatTime } from "@/lib/formatTime";
-import { mainClipRanges } from "@/lib/timeline";
 import type { Clip } from "@/types/clip";
 import type { SequencePlayer } from "@/hooks/useSequencePlayer";
 
@@ -31,15 +21,14 @@ function isTypingTarget(target: EventTarget | null) {
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable;
 }
 
-/** The project monitor: one player that runs the whole sequence, with transport. */
+/** The project monitor: one player that runs the whole timeline, with transport. */
 export const SequencePreview = ({ clips, player, attachMain, onBeforePlay, className }: SequencePreviewProps) => {
   const [muted, setMuted] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const elRef = useRef<HTMLMediaElement | null>(null);
   const projectType = clips[0]?.type ?? "video";
   const activeClip = clips.find((c) => c.id === player.activeClipId) ?? clips[0];
-  const ranges = mainClipRanges(clips);
-  const { attachElement, playing, timelineTime, duration } = player;
+  const { attachElement, playing, timelineTime, duration, segments, inGap } = player;
 
   const mediaRef = useCallback(
     (el: HTMLMediaElement | null) => {
@@ -84,6 +73,7 @@ export const SequencePreview = ({ clips, player, attachMain, onBeforePlay, class
   };
 
   const progress = duration > 0 ? (timelineTime / duration) * 100 : 0;
+  const iconButton = "flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:text-foreground";
 
   return (
     <motion.div
@@ -109,20 +99,12 @@ export const SequencePreview = ({ clips, player, attachMain, onBeforePlay, class
             <AudioLines size={48} className="text-primary/60" />
           </>
         )}
-        {clips.length === 0 && (
-          <p className="absolute text-xs text-muted-foreground">Import a clip to start</p>
-        )}
+        {inGap && <div className="absolute inset-0 bg-black" onClick={togglePlay} />}
+        {clips.length === 0 && <p className="absolute text-xs text-muted-foreground">Import a clip to start</p>}
       </div>
 
       <div className="flex items-center gap-2">
-        <motion.button
-          type="button"
-          onClick={() => player.stepClip(-1)}
-          whileHover={{ scale: 1.05 }}
-          whileTap={{ scale: 0.95 }}
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:text-foreground"
-          aria-label="Previous clip"
-        >
+        <motion.button type="button" onClick={() => player.stepSegment(-1)} whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} className={iconButton} aria-label="Previous cut">
           <SkipBack size={16} />
         </motion.button>
         <motion.button
@@ -135,20 +117,11 @@ export const SequencePreview = ({ clips, player, attachMain, onBeforePlay, class
         >
           {playing ? <Pause size={16} /> : <Play size={16} className="ml-0.5" />}
         </motion.button>
-        <motion.button
-          type="button"
-          onClick={() => player.stepClip(1)}
-          whileHover={{ scale: 1.05 }}
-          whileTap={{ scale: 0.95 }}
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:text-foreground"
-          aria-label="Next clip"
-        >
+        <motion.button type="button" onClick={() => player.stepSegment(1)} whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} className={iconButton} aria-label="Next cut">
           <SkipForward size={16} />
         </motion.button>
 
-        <span className="w-20 shrink-0 font-mono text-xs text-muted-foreground">
-          {formatTime(timelineTime)}
-        </span>
+        <span className="w-20 shrink-0 font-mono text-xs text-muted-foreground">{formatTime(timelineTime)}</span>
 
         <div
           className="relative h-1.5 flex-1 cursor-pointer rounded-full bg-muted"
@@ -157,44 +130,21 @@ export const SequencePreview = ({ clips, player, attachMain, onBeforePlay, class
             player.seek(((e.clientX - rect.left) / rect.width) * duration);
           }}
         >
-          {ranges.slice(1).map((r) => (
-            <div
-              key={r.id}
-              className="absolute top-0 h-1.5 w-px bg-foreground/40"
-              style={{ left: `${(r.start / duration) * 100}%` }}
-            />
+          {segments.slice(1).map((s) => (
+            <div key={s.start} className="absolute top-0 h-1.5 w-px bg-foreground/40" style={{ left: `${(s.start / duration) * 100}%` }} />
           ))}
           <div className="absolute h-1.5 rounded-full bg-primary" style={{ width: `${progress}%` }} />
-          <div
-            className="absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary shadow"
-            style={{ left: `${progress}%` }}
-          />
+          <div className="absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary shadow" style={{ left: `${progress}%` }} />
         </div>
 
-        <span className="w-20 shrink-0 text-right font-mono text-xs text-muted-foreground">
-          {formatTime(duration)}
-        </span>
+        <span className="w-20 shrink-0 text-right font-mono text-xs text-muted-foreground">{formatTime(duration)}</span>
 
-        <motion.button
-          type="button"
-          onClick={toggleMute}
-          whileHover={{ scale: 1.05 }}
-          whileTap={{ scale: 0.95 }}
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:text-foreground"
-          aria-label={muted ? "Unmute" : "Mute"}
-        >
+        <motion.button type="button" onClick={toggleMute} whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} className={iconButton} aria-label={muted ? "Unmute" : "Mute"}>
           {muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
         </motion.button>
 
         {projectType === "video" && (
-          <motion.button
-            type="button"
-            onClick={toggleFullscreen}
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:text-foreground"
-            aria-label="Fullscreen"
-          >
+          <motion.button type="button" onClick={toggleFullscreen} whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} className={iconButton} aria-label="Fullscreen">
             <Maximize size={16} />
           </motion.button>
         )}

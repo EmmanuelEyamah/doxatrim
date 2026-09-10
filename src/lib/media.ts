@@ -1,16 +1,28 @@
 import type { ClipType } from "@/types/clip";
 
-export function readMediaDuration(file: File, type: ClipType): Promise<number> {
+export interface MediaInfo {
+  duration: number;
+  width?: number;
+  height?: number;
+}
+
+export function readMediaInfo(file: File, type: ClipType): Promise<MediaInfo> {
   return new Promise((resolve, reject) => {
     const el = document.createElement(type === "video" ? "video" : "audio");
     const url = URL.createObjectURL(file);
     let settled = false;
 
+    const dimensions = () =>
+      el instanceof HTMLVideoElement && el.videoWidth > 0
+        ? { width: el.videoWidth, height: el.videoHeight }
+        : {};
+
     const finish = (duration: number) => {
       if (settled) return;
       settled = true;
+      const info = { duration: Number.isFinite(duration) ? duration : 0, ...dimensions() };
       URL.revokeObjectURL(url);
-      resolve(Number.isFinite(duration) ? duration : 0);
+      resolve(info);
     };
 
     el.preload = "metadata";
@@ -45,6 +57,10 @@ export function readMediaDuration(file: File, type: ClipType): Promise<number> {
     // with unusual/missing metadata.
     setTimeout(() => finish(el.duration), 8000);
   });
+}
+
+export async function readMediaDuration(file: File, type: ClipType): Promise<number> {
+  return (await readMediaInfo(file, type)).duration;
 }
 
 export function generateVideoThumbnail(file: File): Promise<string | undefined> {

@@ -7,6 +7,8 @@ export interface Asset {
   name: string;
   type: ClipType;
   duration: number; // seconds
+  width?: number;
+  height?: number;
   thumbnailUrl?: string;
   origin: "local" | "url";
   sourceUrl?: string;
