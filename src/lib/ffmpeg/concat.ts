@@ -4,7 +4,10 @@ import type { OutputFormat } from "@/types/project";
 export function reencodeArgsFor(outputFormat: OutputFormat): string[] {
   switch (outputFormat) {
     case "mp4":
-      return ["-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac"];
+      // This is the only path that ever re-encodes video (mismatched clip
+      // codecs). crf 18 is visually transparent; +faststart puts the index
+      // up front so the exported file starts playing before it's fully read.
+      return ["-c:v", "libx264", "-preset", "medium", "-crf", "18", "-movflags", "+faststart", "-c:a", "aac"];
     case "wav":
       return ["-c:a", "pcm_s16le"];
     case "mp3":

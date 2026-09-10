@@ -3,8 +3,9 @@ import { motion } from "framer-motion";
 import { Download, Link2, ListVideo, Loader2, Music, Video } from "lucide-react";
 import toast from "react-hot-toast";
 import { cn } from "@/lib/utils";
-import { buildClipsFromFiles } from "@/lib/buildClips";
-import { useClipStore } from "@/stores/useClipStore";
+import { importFiles } from "@/lib/importFiles";
+import { useAssetStore } from "@/stores/useAssetStore";
+import { useSettingsStore } from "@/stores/useSettingsStore";
 import type { TranscriptCue } from "@/types/clip";
 
 type MediaType = "video" | "audio";
@@ -63,7 +64,6 @@ function formatDuration(seconds: number | null): string {
 }
 
 export const UrlImport = () => {
-  const addClips = useClipStore((s) => s.addClips);
   const [url, setUrl] = useState("");
   const [mediaType, setMediaType] = useState<MediaType>("video");
   const [ownsRights, setOwnsRights] = useState(false);
@@ -151,7 +151,7 @@ export const UrlImport = () => {
 
   // Best-effort, non-blocking: captions are a bonus, not required for import
   // to succeed, and many videos simply don't have any.
-  const fetchTranscriptInBackground = (clipId: string, videoUrl: string) => {
+  const fetchTranscriptInBackground = (assetId: string, videoUrl: string) => {
     fetch(`${IMPORT_SERVER_URL}/api/transcript`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -160,7 +160,8 @@ export const UrlImport = () => {
       .then((res) => (res.ok ? res.json() : null))
       .then((data: { transcript: TranscriptCue[] } | null) => {
         if (data?.transcript?.length) {
-          useClipStore.getState().setTranscript(clipId, data.transcript);
+          // Lands on the asset and on every timeline clip placed from it.
+          useAssetStore.getState().setTranscript(assetId, data.transcript);
         }
       })
       .catch(() => {});
@@ -175,15 +176,15 @@ export const UrlImport = () => {
       try {
         const file = await importSingleVideo(entry.url);
         lastFile = { blob: file };
-        // Re-read current clips each iteration so type-mixing validation sees
-        // clips already added earlier in this same batch, not a stale list.
-        const currentClips = useClipStore.getState().clips;
-        const { clips: newClips, rejected } = await buildClipsFromFiles([file], currentClips);
+        const { assets, rejected } = await importFiles([file], {
+          origin: "url",
+          sourceUrl: entry.url,
+          addToTimeline: useSettingsStore.getState().autoAddImports,
+        });
         for (const { reason } of rejected) toast.error(`${entry.title}: ${reason}`);
-        if (newClips.length > 0) {
-          addClips(newClips);
+        if (assets.length > 0) {
           successCount++;
-          fetchTranscriptInBackground(newClips[0].id, entry.url);
+          fetchTranscriptInBackground(assets[0].id, entry.url);
         }
       } catch (err) {
         toast.error(`${entry.title}: ${err instanceof Error ? err.message : "Import failed"}`);

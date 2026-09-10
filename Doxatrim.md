@@ -400,3 +400,24 @@ You asked me to push ahead on Tier A/B/C while you were out. Here's exactly what
 1. Background audio: add a main clip, add a background track, adjust both volume sliders, export, confirm the mix sounds right (main audible, background sitting under it, not clipping/distorted).
 2. URL import: confirm `cd server && npm run dev` starts cleanly, paste a URL you have rights to, check the box, import, confirm it lands in the timeline like a normal clip.
 3. The original outstanding item: large file (500MB+) export test — still not done, still needs you.
+
+## 19. Multi-Track Studio (Tier C) — shipped 2026-09-10
+
+Direction change from you: a proper editing-software UI ("CapCut desktop kind of UI, production grade") with real multi-track audio mixing, not the stacked-cards v1 page. Built in five phases; the engine half is verified against native ffmpeg with synthetic fixtures (`silencedetect`/`ffprobe` assertions), the browser half needs your eyes.
+
+### What's there now
+
+- **Editor shell** (`src/components/shell/`): top bar (project name, theme, **Export** dialog) · **media bin** left (Media tab: drop zone + asset grid, drag assets onto the timeline; Link tab: URL/playlist import; "Auto-add imports to timeline" switch) · **monitor** center (plays the whole sequence, ⏮ ▶ ⏭, scrubber with clip boundaries, Space) · **inspector** right (clip → trim + actions; layer → full layer editor with Start here / End here; nothing → project summary).
+- **Lane timeline** (`src/components/timeline/`): ruler, playhead (drag to scrub, follows playback), V1 lane with clip blocks (drag to reorder, hover actions), one lane per audio layer (drag to move, drag edges to trim/extend, loop repeat hairlines, snap to clip edges/other layers/playhead — Shift bypasses), zoom slider + fit, resizable height, drop files or bin assets directly where you want them. Keys: Space play/pause · ←/→ nudge a layer (Shift = 1 s) · I / O mark in/out on the selected clip · Delete.
+- **Audio layers** (`useAudioLayerStore`, `types/audioLayer.ts`): any number, each with source trim, start time, optional end, **loop to fill**, volume, mute. Sources can be audio *or video* files (only the audio is used) — "Use as audio layer" on any clip/asset. Replaces the single background track.
+- **Live mixed preview** (`lib/audioEngine.ts`, `hooks/useMixPreview.ts`): every layer plays in sync with the monitor through Web Audio — enters at its start, loops, at its volume; volume/mute changes are audible live. Best-effort sync (~50–150 ms); export is the source of truth.
+- **Mixing engine** (`lib/ffmpeg/mixArgs.ts` + `mix.ts`): N-track ffmpeg graph (`atrim` → `adelay` → `volume` → `amix normalize=0`), loop via `-stream_loop`, silent-video fallback via `anullsrc`. **Video is stream-copied — never re-encoded** by the mix. Layer pre-trims are frame-accurate (output-side `-ss`; a real off-by-one-second bug was caught and regression-guarded during testing).
+- **Export as audio**: any video project → mp3/wav (the "save it to my phone as audio" case), works for YouTube and local files alike.
+- Quality: the only re-encode path (mismatched clip codecs) now uses `crf 18` + `+faststart`. Warning when audio-layer sources exceed ~500 MB (wasm memory).
+
+### Known limitations (honest list)
+
+- **Main-clip trims are keyframe-snapped** (that's what keeps video untouched) — a clip can start up to a GOP early in the export, which also shifts layer placement slightly on later clips. Fix in progress: measure each trimmed segment's real length and build export timing from that.
+- Preview sync is approximate; short blip possible when playback crosses a clip boundary (source swap).
+- No undo/redo yet (needs a history layer). No mobile layout (desktop editor by nature).
+- Clip-to-clip transitions, PiP/overlay video, text — still Tier D.

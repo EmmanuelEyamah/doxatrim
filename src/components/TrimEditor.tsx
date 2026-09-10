@@ -13,16 +13,28 @@ interface TrimEditorProps {
   inPoint: number;
   outPoint: number;
   onTrimChange: (inPoint: number, outPoint: number) => void;
-  mediaRef: React.RefObject<HTMLVideoElement | HTMLAudioElement | null>;
+  /** Element whose playhead drives "set at playhead" and (optionally) range-constrained playback. */
+  mediaRef?: React.RefObject<HTMLVideoElement | HTMLAudioElement | null>;
+  /** Overrides `mediaRef` for reading the playhead (source-local seconds); return null when unavailable. */
+  getPlayheadTime?: () => number | null;
+  /** Pause at outPoint and snap back to inPoint. Off when a sequence player owns playback. */
+  constrainPlayback?: boolean;
 }
 
-export const TrimEditor = ({ duration, inPoint, outPoint, onTrimChange, mediaRef }: TrimEditorProps) => {
+export const TrimEditor = ({
+  duration,
+  inPoint,
+  outPoint,
+  onTrimChange,
+  mediaRef,
+  getPlayheadTime,
+  constrainPlayback = true,
+}: TrimEditorProps) => {
   const safeDuration = duration || 0.01;
 
-  // Loop playback: stop at outPoint, snap back to inPoint.
   useEffect(() => {
-    const el = mediaRef.current;
-    if (!el) return;
+    const el = mediaRef?.current;
+    if (!constrainPlayback || !el) return;
     const handleTimeUpdate = () => {
       if (el.currentTime >= outPoint) {
         el.currentTime = inPoint;
@@ -31,7 +43,12 @@ export const TrimEditor = ({ duration, inPoint, outPoint, onTrimChange, mediaRef
     };
     el.addEventListener("timeupdate", handleTimeUpdate);
     return () => el.removeEventListener("timeupdate", handleTimeUpdate);
-  }, [mediaRef, inPoint, outPoint]);
+  }, [mediaRef, inPoint, outPoint, constrainPlayback]);
+
+  const readPlayhead = (): number | null => {
+    if (getPlayheadTime) return getPlayheadTime();
+    return mediaRef?.current?.currentTime ?? null;
+  };
 
   const setIn = (value: number) => {
     onTrimChange(Math.min(Math.max(0, value), outPoint - 0.05), outPoint);
@@ -42,11 +59,13 @@ export const TrimEditor = ({ duration, inPoint, outPoint, onTrimChange, mediaRef
   };
 
   const setInAtPlayhead = () => {
-    if (mediaRef.current) setIn(mediaRef.current.currentTime);
+    const t = readPlayhead();
+    if (t != null) setIn(t);
   };
 
   const setOutAtPlayhead = () => {
-    if (mediaRef.current) setOut(mediaRef.current.currentTime);
+    const t = readPlayhead();
+    if (t != null) setOut(t);
   };
 
   return (

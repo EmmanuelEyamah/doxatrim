@@ -1,15 +1,22 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
 import toast from "react-hot-toast";
-import { Download, Loader2, Trash2 } from "lucide-react";
+import { AudioLines, Download, Loader2, Trash2, Video } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { MediaPlayer } from "@/components/MediaPlayer";
 import { useFFmpeg } from "@/hooks/useFFmpeg";
 import { useClipStore } from "@/stores/useClipStore";
+import { useAudioLayerStore } from "@/stores/useAudioLayerStore";
 import { trimClip } from "@/lib/ffmpeg/trim";
 import { concatClips, readAndCleanup } from "@/lib/ffmpeg/concat";
-import { mixBackgroundAudio } from "@/lib/ffmpeg/mix";
-import { useBackgroundAudioStore } from "@/stores/useBackgroundAudioStore";
+import { mixAudioLayers } from "@/lib/ffmpeg/mix";
+import { isLayerActive, measuredTimeline, timelineEnd } from "@/lib/timeline";
 import type { OutputFormat } from "@/types/project";
+
+type AudioFormat = "mp3" | "wav";
+type ExportAs = "video" | "audio";
+
+const LARGE_LAYER_BYTES = 500 * 1024 * 1024;
 
 function baseName(filename: string): string {
   return filename.replace(/\.[^./]+$/, "");
@@ -18,29 +25,34 @@ function baseName(filename: string): string {
 function describeError(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err);
   if (/memory|oom|out of memory|aborted/i.test(message)) {
-    return "Ran out of memory processing this file. Try a smaller file or fewer clips — large exports can exceed what the browser tab can handle.";
+    return "Ran out of memory processing this file. Try a smaller file or fewer layers — large exports can exceed what the browser tab can handle.";
   }
   return message;
 }
 
 export const ExportPanel = () => {
   const clips = useClipStore((s) => s.clips);
-  const backgroundAudio = useBackgroundAudioStore();
+  const layers = useAudioLayerStore((s) => s.layers);
+  const mainVolume = useAudioLayerStore((s) => s.mainVolume);
   const { ffmpeg, loaded, loading, progress, error: loadError } = useFFmpeg();
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   const [outputUrl, setOutputUrl] = useState<string | null>(null);
-  const [audioFormat, setAudioFormat] = useState<"mp3" | "wav">("mp3");
+  const [exportAs, setExportAs] = useState<ExportAs>("video");
+  const [audioFormat, setAudioFormat] = useState<AudioFormat>("mp3");
 
   if (clips.length === 0) return null;
 
   const projectType = clips[0].type;
-  const outputFormat: OutputFormat = projectType === "audio" ? audioFormat : "mp4";
+  const dropVideo = projectType === "video" && exportAs === "audio";
+  const outputFormat: OutputFormat =
+    projectType === "video" && exportAs === "video" ? "mp4" : audioFormat;
+  const end = timelineEnd(clips);
+  const activeLayerCount = layers.filter((l) => isLayerActive(l, end)).length;
+  const needsMix = activeLayerCount > 0 || dropVideo || mainVolume !== 1;
   const extensions = new Set(clips.map((c) => c.file.name.split(".").pop()?.toLowerCase()));
   const formatMismatch = extensions.size > 1;
-  // Named from the source clip, not a generic "doxatrim-export" — multiple
-  // clips get joined under the first one's name, matching what you'd expect
-  // to find it as later.
+  const layerBytes = layers.reduce((sum, l) => sum + l.file.size, 0);
   const exportFilename = `${baseName(clips[0].file.name)} (edited).${outputFormat}`;
 
   const clearOutput = () => {
@@ -58,22 +70,34 @@ export const ExportPanel = () => {
 
     try {
       const segments: string[] = [];
+      const measured: number[] = [];
       for (let i = 0; i < clips.length; i++) {
-        segments.push(await trimClip(ffmpeg, clips[i], i));
+        const segment = await trimClip(ffmpeg, clips[i], i);
+        segments.push(segment.name);
+        measured.push(segment.duration);
       }
-      let outputName = await concatClips(ffmpeg, segments, outputFormat);
+      // The concat container follows the source type; the mix stage handles
+      // dropping video when exporting a video project as audio.
+      const concatFormat: OutputFormat = projectType === "video" ? "mp4" : audioFormat;
+      let outputName = await concatClips(ffmpeg, segments, concatFormat);
 
-      if (backgroundAudio.file) {
-        const mainDuration = clips.reduce((sum, c) => sum + (c.outPoint - c.inPoint), 0);
-        outputName = await mixBackgroundAudio(ffmpeg, {
+      if (needsMix) {
+        // Main trims are keyframe-snapped (video is never re-encoded), so the
+        // exported sequence can run a little longer than the on-screen timeline.
+        // Place layers against the measured export timeline, not the ideal one.
+        const { actualEnd, toActual } = measuredTimeline(clips, measured);
+        const placedLayers = layers.map((l) => ({
+          ...l,
+          startAt: toActual(l.startAt),
+          endAt: l.endAt == null ? null : toActual(l.endAt),
+        }));
+        outputName = await mixAudioLayers(ffmpeg, {
           mainInputName: outputName,
-          backgroundFile: backgroundAudio.file,
-          bgInPoint: backgroundAudio.inPoint,
-          bgOutPoint: backgroundAudio.outPoint,
-          mainVolume: backgroundAudio.mainVolume,
-          bgVolume: backgroundAudio.volume,
-          mainDuration,
+          layers: placedLayers,
+          mainVolume,
+          timelineEnd: actualEnd,
           outputFormat,
+          dropVideo,
         });
       }
 
@@ -90,6 +114,8 @@ export const ExportPanel = () => {
     }
   };
 
+  const showAudioFormat = projectType === "audio" || exportAs === "audio";
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -97,19 +123,65 @@ export const ExportPanel = () => {
       transition={{ duration: 0.4, ease: "easeOut" }}
       className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4"
     >
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm font-semibold">Export</p>
-        {projectType === "audio" && (
-          <select
-            value={audioFormat}
-            onChange={(e) => setAudioFormat(e.target.value as "mp3" | "wav")}
-            className="rounded-lg border border-border bg-background px-2 py-1 text-xs"
-          >
-            <option value="mp3">mp3</option>
-            <option value="wav">wav</option>
-          </select>
-        )}
+        <div className="flex items-center gap-2">
+          {projectType === "video" && (
+            <div className="flex rounded-lg border border-border p-1">
+              <button
+                type="button"
+                onClick={() => setExportAs("video")}
+                className={cn(
+                  "flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-semibold transition-colors",
+                  exportAs === "video"
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                <Video size={14} /> Video
+              </button>
+              <button
+                type="button"
+                onClick={() => setExportAs("audio")}
+                className={cn(
+                  "flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-semibold transition-colors",
+                  exportAs === "audio"
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                <AudioLines size={14} /> Audio only
+              </button>
+            </div>
+          )}
+          {showAudioFormat && (
+            <select
+              value={audioFormat}
+              onChange={(e) => setAudioFormat(e.target.value as AudioFormat)}
+              className="rounded-lg border border-border bg-background px-2 py-1 text-xs"
+            >
+              <option value="mp3">mp3</option>
+              <option value="wav">wav</option>
+            </select>
+          )}
+        </div>
       </div>
+
+      {activeLayerCount > 0 && (
+        <p className="text-xs text-muted-foreground">
+          Mixing {activeLayerCount} audio layer{activeLayerCount > 1 ? "s" : ""} into the output
+          {dropVideo ? " (audio only)" : ""}. Video is copied as-is, never re-encoded.
+        </p>
+      )}
+
+      {layerBytes > LARGE_LAYER_BYTES && (
+        <p className="text-xs text-warning">
+          Audio layers total {(layerBytes / 1e6).toFixed(0)} MB of source files — every layer is
+          copied into the browser's ffmpeg memory during export, so very large sources (whole
+          videos used just for their audio) can run out of memory. Audio-only files are much
+          lighter.
+        </p>
+      )}
 
       {formatMismatch && (
         <p className="text-xs text-warning">
@@ -135,7 +207,7 @@ export const ExportPanel = () => {
         ) : loading ? (
           "Loading ffmpeg…"
         ) : (
-          "Export"
+          `Export ${dropVideo ? "audio" : projectType}`
         )}
       </button>
 

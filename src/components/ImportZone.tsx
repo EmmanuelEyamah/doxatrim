@@ -1,31 +1,34 @@
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { motion } from "framer-motion";
 import { Upload } from "lucide-react";
 import toast from "react-hot-toast";
 import { cn } from "@/lib/utils";
-import { buildClipsFromFiles } from "@/lib/buildClips";
-import { useClipStore } from "@/stores/useClipStore";
+import { ACCEPT_MEDIA } from "@/lib/fileValidation";
+import { importFiles } from "@/lib/importFiles";
+import { useSettingsStore } from "@/stores/useSettingsStore";
 
-export const ImportZone = () => {
-  const clips = useClipStore((s) => s.clips);
-  const addClips = useClipStore((s) => s.addClips);
+interface ImportZoneProps {
+  compact?: boolean;
+  className?: string;
+}
+
+export const ImportZone = ({ compact = false, className }: ImportZoneProps) => {
+  const autoAddImports = useSettingsStore((s) => s.autoAddImports);
   const [isDragging, setIsDragging] = useState(false);
   const [importing, setImporting] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
 
   const handleFiles = async (fileList: FileList | null) => {
     if (!fileList || fileList.length === 0) return;
-
     setImporting(true);
     try {
-      const { clips: newClips, rejected } = await buildClipsFromFiles(
-        Array.from(fileList),
-        clips
-      );
-      for (const { file, reason } of rejected) {
-        toast.error(`${file.name}: ${reason}`);
+      const { assets, rejected } = await importFiles(Array.from(fileList), {
+        origin: "local",
+        addToTimeline: autoAddImports,
+      });
+      for (const { file, reason } of rejected) toast.error(`${file.name}: ${reason}`);
+      if (assets.length > 0 && !autoAddImports) {
+        toast.success(`Added ${assets.length} file${assets.length > 1 ? "s" : ""} to the media bin`);
       }
-      if (newClips.length > 0) addClips(newClips);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to import file");
     } finally {
@@ -48,12 +51,14 @@ export const ImportZone = () => {
         void handleFiles(e.dataTransfer.files);
       }}
       className={cn(
-        "flex cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-border bg-card p-10 text-center transition-colors",
-        isDragging && "border-primary bg-primary/5"
+        "flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-border bg-card text-center transition-colors",
+        compact ? "p-5" : "p-10 gap-3",
+        isDragging && "border-primary bg-primary/5",
+        className
       )}
     >
-      <Upload size={28} className="text-primary" />
-      <p className="text-sm font-semibold">
+      <Upload size={compact ? 20 : 28} className="text-primary" />
+      <p className={cn("font-semibold", compact ? "text-xs" : "text-sm")}>
         {importing ? "Importing…" : "Drag & drop video or audio files"}
       </p>
       <p className="text-xs text-muted-foreground">
@@ -61,10 +66,9 @@ export const ImportZone = () => {
       </p>
       <input
         id="doxatrim-file-input"
-        ref={inputRef}
         type="file"
         multiple
-        accept=".mp4,.mov,.webm,.mp3,.wav,.m4a"
+        accept={ACCEPT_MEDIA}
         className="hidden"
         onChange={(e) => {
           void handleFiles(e.target.files);

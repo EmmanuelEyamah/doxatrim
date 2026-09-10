@@ -14,5 +14,6 @@ export interface Clip {
   outPoint: number; // seconds
   thumbnailUrl?: string;
   order: number;
+  assetId?: string; // media-bin asset this clip was placed from
   transcript?: TranscriptCue[]; // only populated for URL-imported clips with captions available
 }
