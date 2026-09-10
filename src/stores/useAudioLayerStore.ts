@@ -1,5 +1,8 @@
 import { create } from "zustand";
 import type { AudioLayer } from "@/types/audioLayer";
+import { layerSpan } from "@/lib/timeline";
+
+const MIN_PIECE = 0.05;
 
 interface AudioLayerStore {
   layers: AudioLayer[];
@@ -10,6 +13,10 @@ interface AudioLayerStore {
   updateLayer: (id: string, patch: Partial<Omit<AudioLayer, "id" | "file">>) => void;
   setMainVolume: (volume: number) => void;
   selectLayer: (id: string | null) => void;
+  /** Cuts a layer in two at a timeline time. A looped layer restarts its loop at the cut. */
+  splitLayer: (id: string, at: number, timelineEnd: number) => void;
+  /** Places `count` copies back to back after the layer, on new lanes. */
+  duplicateLayer: (id: string, count: number, timelineEnd: number) => void;
 }
 
 export const useAudioLayerStore = create<AudioLayerStore>()((set, get) => ({
@@ -50,4 +57,46 @@ export const useAudioLayerStore = create<AudioLayerStore>()((set, get) => ({
   setMainVolume: (mainVolume) => set({ mainVolume }),
 
   selectLayer: (id) => set({ selectedLayerId: id }),
+
+  splitLayer: (id, at, timelineEnd) =>
+    set((s) => {
+      const idx = s.layers.findIndex((l) => l.id === id);
+      if (idx === -1) return {};
+      const layer = s.layers[idx];
+      const span = layerSpan(layer, timelineEnd);
+      const local = at - layer.startAt;
+      if (local <= MIN_PIECE || local >= span - MIN_PIECE) return {};
+
+      const head: AudioLayer = layer.loop
+        ? { ...layer, endAt: at }
+        : { ...layer, outPoint: layer.inPoint + local, endAt: null };
+      const tail: AudioLayer = layer.loop
+        ? { ...layer, id: crypto.randomUUID(), startAt: at }
+        : { ...layer, id: crypto.randomUUID(), startAt: at, inPoint: layer.inPoint + local };
+
+      return {
+        layers: [...s.layers.slice(0, idx), head, tail, ...s.layers.slice(idx + 1)],
+        selectedLayerId: head.id,
+      };
+    }),
+
+  duplicateLayer: (id, count, timelineEnd) =>
+    set((s) => {
+      const idx = s.layers.findIndex((l) => l.id === id);
+      if (idx === -1 || count < 1) return {};
+      const layer = s.layers[idx];
+      const span = layerSpan(layer, timelineEnd);
+      if (span <= MIN_PIECE) return {};
+      const copies: AudioLayer[] = Array.from({ length: count }, (_, k) => {
+        const startAt = layer.startAt + span * (k + 1);
+        return {
+          ...layer,
+          id: crypto.randomUUID(),
+          startAt,
+          endAt: layer.loop ? startAt + span : layer.endAt == null ? null : startAt + span,
+          colorIndex: (layer.colorIndex + k + 1) % 5,
+        };
+      });
+      return { layers: [...s.layers.slice(0, idx + 1), ...copies, ...s.layers.slice(idx + 1)] };
+    }),
 }));

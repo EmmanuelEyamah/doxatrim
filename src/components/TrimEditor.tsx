@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { cn } from "@/lib/utils";
 import { formatTime, parseTime } from "@/lib/formatTime";
 
 const THUMB_CLASS =
@@ -19,6 +20,8 @@ interface TrimEditorProps {
   getPlayheadTime?: () => number | null;
   /** Pause at outPoint and snap back to inPoint. Off when a sequence player owns playback. */
   constrainPlayback?: boolean;
+  /** Dense, chrome-less layout for inspector panels. */
+  bare?: boolean;
 }
 
 export const TrimEditor = ({
@@ -29,6 +32,7 @@ export const TrimEditor = ({
   mediaRef,
   getPlayheadTime,
   constrainPlayback = true,
+  bare = false,
 }: TrimEditorProps) => {
   const safeDuration = duration || 0.01;
 
@@ -58,18 +62,32 @@ export const TrimEditor = ({
     onTrimChange(inPoint, Math.max(Math.min(safeDuration, value), inPoint + 0.05));
   };
 
-  const setInAtPlayhead = () => {
-    const t = readPlayhead();
-    if (t != null) setIn(t);
-  };
+  const fieldClass = cn(
+    "rounded-md border border-border bg-background font-mono outline-none focus:border-primary",
+    bare ? "h-7 w-24 px-2 text-xs" : "w-24 px-2 py-1 text-sm"
+  );
+  const chipClass = cn(
+    "rounded-md border border-border text-muted-foreground hover:text-foreground",
+    bare ? "h-7 px-2 text-[11px]" : "px-2 py-1 text-xs"
+  );
 
-  const setOutAtPlayhead = () => {
-    const t = readPlayhead();
-    if (t != null) setOut(t);
-  };
+  const timeField = (value: number, apply: (v: number) => void, label: string) => (
+    <input
+      key={value}
+      type="text"
+      aria-label={label}
+      defaultValue={formatTime(value)}
+      onBlur={(e) => {
+        const parsed = parseTime(e.target.value);
+        if (parsed !== null) apply(parsed);
+        else e.target.value = formatTime(value);
+      }}
+      className={fieldClass}
+    />
+  );
 
   return (
-    <div className="flex flex-col gap-4 rounded-xl border border-border bg-card p-4">
+    <div className={cn("flex flex-col", bare ? "gap-3" : "gap-4 rounded-xl border border-border bg-card p-4")}>
       <div className="relative h-2 rounded-full bg-muted">
         <div
           className="absolute h-2 rounded-full bg-primary"
@@ -100,49 +118,31 @@ export const TrimEditor = ({
         />
       </div>
 
-      <div className="flex flex-wrap items-center gap-3 text-sm">
-        <label className="flex items-center gap-2">
-          In
-          <input
-            key={inPoint}
-            type="text"
-            defaultValue={formatTime(inPoint)}
-            onBlur={(e) => {
-              const parsed = parseTime(e.target.value);
-              if (parsed !== null) setIn(parsed);
-              else e.target.value = formatTime(inPoint);
-            }}
-            className="w-24 rounded-lg border border-border bg-background px-2 py-1"
-          />
-        </label>
+      <div className={cn("grid items-center gap-x-2 gap-y-2", bare ? "grid-cols-[2.5rem_auto_1fr] text-xs" : "grid-cols-[2rem_auto_1fr] text-sm")}>
+        <span className="text-muted-foreground">In</span>
+        {timeField(inPoint, setIn, "In point")}
         <button
           type="button"
-          onClick={setInAtPlayhead}
-          className="rounded-lg border border-border px-2 py-1 text-xs text-muted-foreground"
+          onClick={() => {
+            const t = readPlayhead();
+            if (t != null) setIn(t);
+          }}
+          className={cn(chipClass, "justify-self-start")}
         >
-          Set in at playhead
+          Set at playhead
         </button>
 
-        <label className="flex items-center gap-2">
-          Out
-          <input
-            key={outPoint}
-            type="text"
-            defaultValue={formatTime(outPoint)}
-            onBlur={(e) => {
-              const parsed = parseTime(e.target.value);
-              if (parsed !== null) setOut(parsed);
-              else e.target.value = formatTime(outPoint);
-            }}
-            className="w-24 rounded-lg border border-border bg-background px-2 py-1"
-          />
-        </label>
+        <span className="text-muted-foreground">Out</span>
+        {timeField(outPoint, setOut, "Out point")}
         <button
           type="button"
-          onClick={setOutAtPlayhead}
-          className="rounded-lg border border-border px-2 py-1 text-xs text-muted-foreground"
+          onClick={() => {
+            const t = readPlayhead();
+            if (t != null) setOut(t);
+          }}
+          className={cn(chipClass, "justify-self-start")}
         >
-          Set out at playhead
+          Set at playhead
         </button>
       </div>
     </div>

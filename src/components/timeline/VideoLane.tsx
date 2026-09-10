@@ -22,6 +22,7 @@ interface ClipBlockProps {
   onRemove: () => void;
   onAddAsLayer: () => void;
   onDownload: () => void;
+  onContextMenu: (e: React.MouseEvent) => void;
 }
 
 const ClipBlock = ({
@@ -36,6 +37,7 @@ const ClipBlock = ({
   onRemove,
   onAddAsLayer,
   onDownload,
+  onContextMenu,
 }: ClipBlockProps) => {
   const [dragX, setDragX] = useState<number | null>(null);
 
@@ -67,6 +69,7 @@ const ClipBlock = ({
       layout={dragX === null}
       onPointerDown={onPointerDown}
       onClick={(e) => e.stopPropagation()}
+      onContextMenu={onContextMenu}
       className={cn(
         "group absolute top-1 bottom-1 cursor-grab select-none overflow-hidden rounded-md border bg-card active:cursor-grabbing",
         selected ? "border-primary ring-2 ring-primary/40" : "border-border",
@@ -81,10 +84,8 @@ const ClipBlock = ({
         backgroundSize: "auto 100%",
       }}
     >
-      <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent" />
-      {!clip.thumbnailUrl && (
-        <Music size={16} className="absolute left-2 top-2 text-muted-foreground" />
-      )}
+      <div className="absolute inset-0 bg-linear-to-t from-black/70 via-black/20 to-transparent" />
+      {!clip.thumbnailUrl && <Music size={16} className="absolute left-2 top-2 text-muted-foreground" />}
       <div className="absolute bottom-1 left-2 right-2 flex items-end justify-between gap-2 text-[11px] leading-tight text-white">
         <span className="truncate font-semibold drop-shadow">{clip.file.name}</span>
         <span className="shrink-0 font-mono opacity-80">{formatTime(range.end - range.start).slice(0, 5)}</span>
@@ -133,6 +134,7 @@ interface VideoLaneProps {
   onRemove: (id: string) => void;
   onAddAsLayer: (clip: Clip) => void;
   onDownload: (clip: Clip) => void;
+  onContextMenu: (id: string, e: React.MouseEvent) => void;
 }
 
 export const VideoLane = ({
@@ -146,6 +148,7 @@ export const VideoLane = ({
   onRemove,
   onAddAsLayer,
   onDownload,
+  onContextMenu,
 }: VideoLaneProps) => (
   <div className="relative border-b border-border" style={{ height: VIDEO_LANE_HEIGHT, width }}>
     {clips.length === 0 && (
@@ -167,6 +170,7 @@ export const VideoLane = ({
         onRemove={() => onRemove(clip.id)}
         onAddAsLayer={() => onAddAsLayer(clip)}
         onDownload={() => onDownload(clip)}
+        onContextMenu={(e) => onContextMenu(clip.id, e)}
       />
     ))}
   </div>

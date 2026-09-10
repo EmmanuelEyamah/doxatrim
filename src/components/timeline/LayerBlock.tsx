@@ -25,6 +25,7 @@ interface LayerBlockProps {
   snapTargets: number[];
   onSelect: () => void;
   onChange: (patch: Partial<Omit<AudioLayer, "id" | "file">>) => void;
+  onContextMenu?: (e: React.MouseEvent) => void;
 }
 
 export const LayerBlock = ({
@@ -36,6 +37,7 @@ export const LayerBlock = ({
   snapTargets,
   onSelect,
   onChange,
+  onContextMenu,
 }: LayerBlockProps) => {
   const startRef = useRef({ startAt: 0, inPoint: 0, outPoint: 0, endAt: null as number | null, span: 0 });
   const span = layerSpan(layer, timelineEnd);
@@ -114,6 +116,7 @@ export const LayerBlock = ({
       onPointerDown={onBodyDown}
       onClick={(e) => e.stopPropagation()}
       onDoubleClick={onSelect}
+      onContextMenu={onContextMenu}
       className={cn(
         "group absolute top-1 bottom-1 cursor-grab select-none overflow-hidden rounded-md border active:cursor-grabbing",
         selected ? "border-primary ring-2 ring-primary/40" : "border-transparent",

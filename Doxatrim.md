@@ -414,6 +414,8 @@ Direction change from you: a proper editing-software UI ("CapCut desktop kind of
 - **Mixing engine** (`lib/ffmpeg/mixArgs.ts` + `mix.ts`): N-track ffmpeg graph (`atrim` → `adelay` → `volume` → `amix normalize=0`), loop via `-stream_loop`, silent-video fallback via `anullsrc`. **Video is stream-copied — never re-encoded** by the mix. Layer pre-trims are frame-accurate (output-side `-ss`; a real off-by-one-second bug was caught and regression-guarded during testing).
 - **Export as audio**: any video project → mp3/wav (the "save it to my phone as audio" case), works for YouTube and local files alike.
 - Quality: the only re-encode path (mismatched clip codecs) now uses `crf 18` + `+faststart`. Warning when audio-layer sources exceed ~500 MB (wasm memory).
+- **Cutting & repeating on the timeline** (added same day, from your feedback): **Split at playhead** (`S`), **Duplicate** (`⌘/Ctrl+D`) and **Repeat ×N** for clips *and* audio layers — from the timeline toolbar, the right-click menu on any block, or the inspector. Splits are free (both halves point at the same file). Typical flow: trim the section you want → Repeat ×10 → Export as audio.
+- **Resizable panels**: drag the gutters beside the media bin and inspector (widths remembered), plus the timeline's height handle. Inspector and bin restyled as flat, dense editor panels (label/control rows, section dividers) instead of stacked cards.
 
 ### Known limitations (honest list)
 

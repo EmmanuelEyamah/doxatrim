@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { Upload } from "lucide-react";
+import { Loader2, Upload } from "lucide-react";
 import toast from "react-hot-toast";
 import { cn } from "@/lib/utils";
 import { ACCEPT_MEDIA } from "@/lib/fileValidation";
@@ -8,6 +8,7 @@ import { importFiles } from "@/lib/importFiles";
 import { useSettingsStore } from "@/stores/useSettingsStore";
 
 interface ImportZoneProps {
+  /** Slim single-row control for side panels instead of the large drop area. */
   compact?: boolean;
   className?: string;
 }
@@ -36,45 +37,71 @@ export const ImportZone = ({ compact = false, className }: ImportZoneProps) => {
     }
   };
 
+  const dragProps = {
+    onDragOver: (e: React.DragEvent) => {
+      e.preventDefault();
+      setIsDragging(true);
+    },
+    onDragLeave: () => setIsDragging(false),
+    onDrop: (e: React.DragEvent) => {
+      e.preventDefault();
+      setIsDragging(false);
+      void handleFiles(e.dataTransfer.files);
+    },
+  };
+
+  const input = (
+    <input
+      id="doxatrim-file-input"
+      type="file"
+      multiple
+      accept={ACCEPT_MEDIA}
+      className="hidden"
+      onChange={(e) => {
+        void handleFiles(e.target.files);
+        e.target.value = "";
+      }}
+    />
+  );
+
+  if (compact) {
+    return (
+      <label
+        htmlFor="doxatrim-file-input"
+        {...dragProps}
+        className={cn(
+          "flex h-9 cursor-pointer items-center gap-2 rounded-md border border-dashed border-border px-3 text-xs transition-colors hover:border-primary/60 hover:bg-primary/5",
+          isDragging && "border-primary bg-primary/10",
+          className
+        )}
+      >
+        {importing ? (
+          <Loader2 size={14} className="shrink-0 animate-spin text-primary" />
+        ) : (
+          <Upload size={14} className="shrink-0 text-primary" />
+        )}
+        <span className="font-semibold">{importing ? "Importing…" : "Import media"}</span>
+        <span className="truncate text-muted-foreground">— drop files or click</span>
+        {input}
+      </label>
+    );
+  }
+
   return (
     <motion.label
       htmlFor="doxatrim-file-input"
       whileHover={{ scale: 1.01 }}
-      onDragOver={(e) => {
-        e.preventDefault();
-        setIsDragging(true);
-      }}
-      onDragLeave={() => setIsDragging(false)}
-      onDrop={(e) => {
-        e.preventDefault();
-        setIsDragging(false);
-        void handleFiles(e.dataTransfer.files);
-      }}
+      {...dragProps}
       className={cn(
-        "flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-border bg-card text-center transition-colors",
-        compact ? "p-5" : "p-10 gap-3",
+        "flex cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-border bg-card p-10 text-center transition-colors",
         isDragging && "border-primary bg-primary/5",
         className
       )}
     >
-      <Upload size={compact ? 20 : 28} className="text-primary" />
-      <p className={cn("font-semibold", compact ? "text-xs" : "text-sm")}>
-        {importing ? "Importing…" : "Drag & drop video or audio files"}
-      </p>
-      <p className="text-xs text-muted-foreground">
-        mp4, mov, webm, mp3, wav, m4a — or click to browse
-      </p>
-      <input
-        id="doxatrim-file-input"
-        type="file"
-        multiple
-        accept={ACCEPT_MEDIA}
-        className="hidden"
-        onChange={(e) => {
-          void handleFiles(e.target.files);
-          e.target.value = "";
-        }}
-      />
+      <Upload size={28} className="text-primary" />
+      <p className="text-sm font-semibold">{importing ? "Importing…" : "Drag & drop video or audio files"}</p>
+      <p className="text-xs text-muted-foreground">mp4, mov, webm, mp3, wav, m4a — or click to browse</p>
+      {input}
     </motion.label>
   );
 };

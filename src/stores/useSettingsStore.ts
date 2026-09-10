@@ -10,20 +10,30 @@ const getInitialTheme = (): Theme => {
   return "light";
 };
 
+export const PANEL_LIMITS = { left: [220, 560], right: [260, 600] } as const;
+
 interface SettingsStore {
   theme: Theme;
   /** Imports land in the media bin; with this on they're also placed on the timeline right away. */
   autoAddImports: boolean;
+  leftPanelWidth: number;
+  rightPanelWidth: number;
   toggleTheme: () => void;
   setTheme: (theme: Theme) => void;
   setAutoAddImports: (value: boolean) => void;
+  setLeftPanelWidth: (px: number) => void;
+  setRightPanelWidth: (px: number) => void;
 }
+
+const clamp = (v: number, [min, max]: readonly [number, number]) => Math.min(max, Math.max(min, v));
 
 export const useSettingsStore = create<SettingsStore>()(
   persist(
     (set) => ({
       theme: getInitialTheme(),
       autoAddImports: true,
+      leftPanelWidth: 320,
+      rightPanelWidth: 340,
       toggleTheme: () =>
         set((s) => {
           const next = s.theme === "light" ? "dark" : "light";
@@ -37,6 +47,8 @@ export const useSettingsStore = create<SettingsStore>()(
         set({ theme });
       },
       setAutoAddImports: (autoAddImports) => set({ autoAddImports }),
+      setLeftPanelWidth: (px) => set({ leftPanelWidth: clamp(px, PANEL_LIMITS.left) }),
+      setRightPanelWidth: (px) => set({ rightPanelWidth: clamp(px, PANEL_LIMITS.right) }),
     }),
     { name: "settings-storage" }
   )
