@@ -39,7 +39,7 @@ interface GapClock {
  * (element paused, a wall-clock timer advances the playhead). Exposes a single
  * timeline clock the timeline UI and the audio-layer preview engine key off.
  */
-export function useSequencePlayer(clips: Clip[]): SequencePlayer {
+export function useSequencePlayer(clips: Clip[], extendTo = 0): SequencePlayer {
   const elRef = useRef<HTMLMediaElement | null>(null);
   const urls = useRef(new Map<string, string>());
   const clipsRef = useRef(clips);
@@ -58,8 +58,8 @@ export function useSequencePlayer(clips: Clip[]): SequencePlayer {
   const [activeClipId, setActiveClipId] = useState<string | null>(null);
   const [inGap, setInGap] = useState(false);
 
-  const segments = useMemo(() => computeEdl(clips), [clips]);
-  const duration = useMemo(() => timelineEnd(clips), [clips]);
+  const segments = useMemo(() => computeEdl(clips, extendTo), [clips, extendTo]);
+  const duration = useMemo(() => Math.max(timelineEnd(clips), extendTo), [clips, extendTo]);
   clipsRef.current = clips;
   segmentsRef.current = segments;
   durationRef.current = duration;

@@ -5,7 +5,7 @@ import { useAudioLayerStore } from "@/stores/useAudioLayerStore";
 import { useSettingsStore } from "@/stores/useSettingsStore";
 import { useSequencePlayer } from "@/hooks/useSequencePlayer";
 import { useMixPreview } from "@/hooks/useMixPreview";
-import { clipLocalToTimeline, timelineEnd } from "@/lib/timeline";
+import { clipLocalToTimeline, projectEnd } from "@/lib/timeline";
 import { EMPTY_SELECTION, isEmptySelection, only, singleItem, type Selection } from "@/lib/selection";
 import { TopBar } from "@/components/shell/TopBar";
 import { MediaPanel } from "@/components/shell/MediaPanel";
@@ -41,8 +41,9 @@ export const EditorShell = () => {
   const setLeftWidth = useSettingsStore((s) => s.setLeftPanelWidth);
   const setRightWidth = useSettingsStore((s) => s.setRightPanelWidth);
 
-  const player = useSequencePlayer(clips);
-  const preview = useMixPreview(player, layers, mainVolume, timelineEnd(clips));
+  const end = projectEnd(clips, layers);
+  const player = useSequencePlayer(clips, end);
+  const preview = useMixPreview(player, layers, mainVolume, end);
 
   const [selection, setSelection] = useState<Selection>(EMPTY_SELECTION);
   const [exportOpen, setExportOpen] = useState(false);
@@ -91,11 +92,11 @@ export const EditorShell = () => {
   }, [clips, layers, selection]);
 
   const selectedClip = singleClipId ? clips.find((c) => c.id === singleClipId) : undefined;
-  const projectName = clips[0] ? baseName(clips[0].file.name) : "Untitled project";
+  const projectName = clips[0] ? baseName(clips[0].file.name) : layers[0] ? baseName(layers[0].name) : "Untitled project";
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background text-foreground">
-      <TopBar projectName={projectName} canExport={clips.length > 0} onExport={() => setExportOpen(true)} />
+      <TopBar projectName={projectName} canExport={clips.length + layers.length > 0} onExport={() => setExportOpen(true)} />
 
       <div className="grid min-h-0 flex-1" style={{ gridTemplateColumns: `${leftWidth}px 4px minmax(0, 1fr) 4px ${rightWidth}px` }}>
         <MediaPanel onLayerAdded={(id) => setSelection(only("layer", id))} />

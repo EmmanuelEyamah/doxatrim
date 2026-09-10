@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { motion } from "framer-motion";
 import {
   AudioLines,
+  AudioWaveform,
   BoxSelect,
   Copy,
   Download,
@@ -25,7 +26,8 @@ import { ACCEPT_MEDIA, getClipType } from "@/lib/fileValidation";
 import { readMediaDuration } from "@/lib/media";
 import { addAssetsToTimeline, importFiles } from "@/lib/importFiles";
 import { snapTime } from "@/lib/snap";
-import { clipEnd, layerSpan, timelineEnd as computeEnd, timelineToClipLocal, trackCount as countTracks } from "@/lib/timeline";
+import { bounceClipsToAudioLayer } from "@/lib/bounce";
+import { clipEnd, layerSpan, projectEnd, timelineToClipLocal, trackCount as countTracks } from "@/lib/timeline";
 import {
   EMPTY_SELECTION,
   isEmptySelection,
@@ -112,7 +114,7 @@ export const MixTimeline = ({ player, selection, onSelect, height, onHeightChang
   const fittedRef = useRef(false);
   const dragRef = useRef<{ snapshot: DragSnapshot; endBefore: number } | null>(null);
 
-  const end = computeEnd(clips);
+  const end = projectEnd(clips, layers);
   const tracks = countTracks(clips) + 1; // + one spare lane on top to drag clips into
   const contentWidth = Math.max(scale.timeToX(end) + 240, viewportWidth);
   const videoAreaHeight = tracks * VIDEO_LANE_HEIGHT;
@@ -301,6 +303,25 @@ export const MixTimeline = ({ player, selection, onSelect, height, onHeightChang
     [addLayer, updateLayer, end, onSelect]
   );
 
+  const [converting, setConverting] = useState(false);
+  const convertToAudio = useCallback(
+    async (target: Selection, removeClips: boolean) => {
+      if (target.clips.length === 0 || converting) return;
+      setConverting(true);
+      const id = toast.loading("Rendering audio…");
+      try {
+        const layerId = await bounceClipsToAudioLayer(target.clips, { removeClips });
+        toast.success(removeClips ? "Replaced with an audio layer" : "Audio layer added under the video", { id });
+        onSelect(only("layer", layerId));
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Could not convert to audio", { id });
+      } finally {
+        setConverting(false);
+      }
+    },
+    [converting, onSelect]
+  );
+
   const playheadHit = timelineToClipLocal(clips, player.timelineTime);
   const canSplit =
     selection.layers.length > 0 ||
@@ -471,6 +492,15 @@ export const MixTimeline = ({ player, selection, onSelect, height, onHeightChang
             aria-label="Repeat count"
           />
         </div>
+        <button
+          type="button"
+          onClick={() => void convertToAudio(selection, false)}
+          disabled={selection.clips.length === 0 || converting}
+          className={toolButton}
+          title="Render the selected clips (cuts, stacking, smooth joins) into one audio layer you can repeat or loop on its own"
+        >
+          <AudioWaveform size={13} /> {converting ? "Rendering…" : "To audio"}
+        </button>
         <button type="button" onClick={() => remove()} disabled={count === 0} className={toolButton} title="Remove selection (Delete)">
           <Trash2 size={13} />
         </button>
@@ -670,6 +700,13 @@ export const MixTimeline = ({ player, selection, onSelect, height, onHeightChang
             {menuItem("Split at playhead", <Scissors size={12} />, () => splitAtPlayhead(menu.target))}
             {menuItem("Duplicate", <Copy size={12} />, () => repeat(menu.target, 1))}
             {menuItem(`Repeat ×${repeatCount}`, <Repeat size={12} />, () => repeat(menu.target, repeatCount))}
+            {menu.target.clips.length > 0 && (
+              <>
+                <div className="my-1 h-px bg-border" />
+                {menuItem("Convert to audio layer", <AudioWaveform size={12} />, () => void convertToAudio(menu.target, false))}
+                {menuItem("Replace with audio layer", <AudioWaveform size={12} />, () => void convertToAudio(menu.target, true))}
+              </>
+            )}
             {menuSingleClip && (
               <>
                 <div className="my-1 h-px bg-border" />

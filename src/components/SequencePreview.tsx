@@ -100,7 +100,11 @@ export const SequencePreview = ({ clips, player, attachMain, onBeforePlay, class
           </>
         )}
         {inGap && <div className="absolute inset-0 bg-black" onClick={togglePlay} />}
-        {clips.length === 0 && <p className="absolute text-xs text-muted-foreground">Import a clip to start</p>}
+        {clips.length === 0 && (
+          <p className="absolute text-xs text-muted-foreground">
+            {duration > 0 ? "Audio-only project — press play to hear the layers" : "Import a clip to start"}
+          </p>
+        )}
       </div>
 
       <div className="flex items-center gap-2">

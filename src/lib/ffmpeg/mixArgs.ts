@@ -2,12 +2,13 @@
 // lists the app sends to ffmpeg.wasm can also be executed against a native
 // ffmpeg in a Node script to verify the filter graph and timing math.
 
-export type MixOutputFormat = "mp4" | "mp3" | "wav";
+export type MixOutputFormat = "mp4" | "mp3" | "wav" | "m4a";
 
 export function audioCodecArgsFor(outputFormat: MixOutputFormat): string[] {
   switch (outputFormat) {
     case "mp4":
-      return ["-c:a", "aac"];
+    case "m4a":
+      return ["-c:a", "aac", "-b:a", "192k"];
     case "wav":
       return ["-c:a", "pcm_s16le"];
     case "mp3":

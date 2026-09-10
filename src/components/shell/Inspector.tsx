@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { motion } from "framer-motion";
 import {
   AudioLines,
+  AudioWaveform,
   Copy,
   Download,
   FileText,
@@ -18,7 +19,9 @@ import { cn } from "@/lib/utils";
 import { formatTime, parseTime } from "@/lib/formatTime";
 import { downloadFile } from "@/lib/download";
 import { getClipType } from "@/lib/fileValidation";
-import { clipEnd, clipLength, layerSpan, timelineEnd, timelineToClipLocal, trackCount } from "@/lib/timeline";
+import { clipEnd, clipLength, layerSpan, projectEnd, timelineToClipLocal, trackCount } from "@/lib/timeline";
+import { bounceClipsToAudioLayer } from "@/lib/bounce";
+import toast from "react-hot-toast";
 import { EMPTY_SELECTION, only, selectionCount, singleItem, type Selection } from "@/lib/selection";
 import { removeSelection, repeatSelection, selectionSpan } from "@/lib/groupOps";
 import { useAudioLayerStore } from "@/stores/useAudioLayerStore";
@@ -83,6 +86,39 @@ const TimeField = ({ value, placeholder, onCommit }: { value: number | null; pla
     className={fieldClass}
   />
 );
+
+const ConvertToAudio = ({ clipIds, onSelect }: { clipIds: string[]; onSelect: (s: Selection) => void }) => {
+  const [removeClips, setRemoveClips] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const run = async () => {
+    setBusy(true);
+    const id = toast.loading("Rendering audio…");
+    try {
+      const layerId = await bounceClipsToAudioLayer(clipIds, { removeClips });
+      toast.success("Audio layer created — repeat or loop it from its lane", { id });
+      onSelect(only("layer", layerId));
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not convert to audio", { id });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Section title="Convert">
+      <p className="text-[11px] text-muted-foreground">
+        Render {clipIds.length > 1 ? "these clips" : "this clip"} — cuts, stacking and smooth joins included — into one
+        audio file placed on the timeline as a layer. Repeat or loop that as audio without the video getting longer.
+      </p>
+      <Row label="Then">
+        <Switch checked={removeClips} onChange={setRemoveClips} label="Remove the video clips afterwards" />
+        <span className="text-muted-foreground">remove the video clip{clipIds.length > 1 ? "s" : ""}</span>
+      </Row>
+      <button type="button" disabled={busy} onClick={() => void run()} className={cn(chipClass, "w-fit")}>
+        <AudioWaveform size={12} /> {busy ? "Rendering…" : "Convert to audio layer"}
+      </button>
+    </Section>
+  );
+};
 
 const RepeatRow = ({ onRepeat }: { onRepeat: (count: number) => void }) => {
   const [count, setCount] = useState(2);
@@ -188,6 +224,8 @@ const ClipInspector = ({
         <RepeatRow onRepeat={(n) => duplicateClip(clip.id, n)} />
       </Section>
 
+      <ConvertToAudio clipIds={[clip.id]} onSelect={onSelect} />
+
       <Section title="Actions">
         <div className="flex flex-wrap gap-1.5">
           {clip.transcript && clip.transcript.length > 0 && (
@@ -233,7 +271,8 @@ const LayerInspector = ({ layer, player }: { layer: AudioLayer; player: Sequence
     return () => URL.revokeObjectURL(url);
   }, [layer.file]);
 
-  const end = timelineEnd(clips);
+  const layers = useAudioLayerStore((s) => s.layers);
+  const end = projectEnd(clips, layers);
   const span = layerSpan(layer, end);
   const segment = layer.outPoint - layer.inPoint;
   const repeats = layer.loop && segment > 0 ? Math.ceil(span / segment) : 1;
@@ -353,6 +392,7 @@ const MultiInspector = ({ selection, onSelect }: { selection: Selection; onSelec
           </button>
         </div>
       </Section>
+      {selection.clips.length > 0 && <ConvertToAudio clipIds={selection.clips} onSelect={onSelect} />}
     </>
   );
 };
@@ -362,7 +402,7 @@ export const Inspector = ({ selection, player, onSelect, onOpenTranscript }: Ins
   const joinCrossfade = useClipStore((s) => s.joinCrossfade);
   const setJoinCrossfade = useClipStore((s) => s.setJoinCrossfade);
   const layers = useAudioLayerStore((s) => s.layers);
-  const end = timelineEnd(clips);
+  const end = projectEnd(clips, layers);
   const single = singleItem(selection);
   const count = selectionCount(selection);
 

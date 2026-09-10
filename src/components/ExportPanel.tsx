@@ -11,7 +11,7 @@ import { makeGapSegment, trimSegment } from "@/lib/ffmpeg/trim";
 import { concatClips, readAndCleanup } from "@/lib/ffmpeg/concat";
 import { mixAudioLayers } from "@/lib/ffmpeg/mix";
 import { smoothJoins } from "@/lib/ffmpeg/smooth";
-import { computeEdl, isLayerActive, measuredTimeline, timelineEnd } from "@/lib/timeline";
+import { computeEdl, isLayerActive, measuredTimeline, projectEnd } from "@/lib/timeline";
 import type { OutputFormat } from "@/types/project";
 
 type AudioFormat = "mp3" | "wav";
@@ -44,13 +44,15 @@ export const ExportPanel = () => {
   const [exportAs, setExportAs] = useState<ExportAs>("video");
   const [audioFormat, setAudioFormat] = useState<AudioFormat>("mp3");
 
-  if (clips.length === 0) return null;
+  if (clips.length === 0 && layers.length === 0) return null;
 
-  const projectType = clips[0].type;
+  // With no video clips at all (e.g. everything was converted to audio) the
+  // project is audio-only: a silent base of the project's length + the layers.
+  const projectType = clips[0]?.type ?? "audio";
   const dropVideo = projectType === "video" && exportAs === "audio";
   const outputFormat: OutputFormat = projectType === "video" && exportAs === "video" ? "mp4" : audioFormat;
-  const end = timelineEnd(clips);
-  const segments = computeEdl(clips);
+  const end = projectEnd(clips, layers);
+  const segments = computeEdl(clips, end);
   const gapCount = segments.filter((s) => !s.clipId).length;
   const joinCount = segments.filter((s, i) => i > 0 && s.clipId && segments[i - 1].clipId).length;
   const smoothing = joinCrossfade > 0 && joinCount > 0;
@@ -59,7 +61,7 @@ export const ExportPanel = () => {
   const extensions = new Set(clips.map((c) => c.file.name.split(".").pop()?.toLowerCase()));
   const formatMismatch = extensions.size > 1 || gapCount > 0;
   const layerBytes = layers.reduce((sum, l) => sum + l.file.size, 0);
-  const exportFilename = `${baseName(clips[0].file.name)} (edited).${outputFormat}`;
+  const exportFilename = `${baseName(clips[0]?.file.name ?? layers[0]?.name ?? "doxatrim")} (edited).${outputFormat}`;
 
   const clearOutput = () => {
     if (outputUrl) URL.revokeObjectURL(outputUrl);

@@ -7,9 +7,24 @@ const round3 = (n: number) => Math.round(n * 1000) / 1000;
 export const clipLength = (c: Clip) => c.outPoint - c.inPoint;
 export const clipEnd = (c: Clip) => c.startAt + clipLength(c);
 
-/** Total length of the project timeline (audio layers never extend it). */
+/** Where the last video clip ends. */
 export function timelineEnd(clips: Clip[]): number {
   return clips.reduce((max, c) => Math.max(max, clipEnd(c)), 0);
+}
+
+/**
+ * Where the project ends: the last clip, or a later audio layer that has a
+ * definite extent (an explicit End, or a play-once file). Loop-to-fill layers
+ * without an End fill whatever the timeline is and never extend it.
+ */
+export function projectEnd(clips: Clip[], layers: AudioLayer[]): number {
+  let end = timelineEnd(clips);
+  for (const l of layers) {
+    const segment = l.outPoint - l.inPoint;
+    const own = l.endAt != null ? l.endAt : l.loop ? 0 : l.startAt + segment;
+    end = Math.max(end, own);
+  }
+  return end;
 }
 
 export function trackCount(clips: Clip[]): number {
@@ -47,13 +62,15 @@ export interface EdlSegment {
  * player and the exporter actually play: cut points at every clip start/end,
  * the top clip between each pair, gaps where nothing is placed.
  */
-export function computeEdl(clips: Clip[]): EdlSegment[] {
-  if (clips.length === 0) return [];
+export function computeEdl(clips: Clip[], extendTo = 0): EdlSegment[] {
   const points = new Set<number>([0]);
   for (const c of clips) {
     points.add(round3(c.startAt));
     points.add(round3(clipEnd(c)));
   }
+  // Audio layers may run past the last clip: the timeline continues as a gap.
+  if (extendTo > 0) points.add(round3(extendTo));
+  if (points.size < 2) return [];
   const sorted = [...points].sort((a, b) => a - b);
   const segments: EdlSegment[] = [];
 

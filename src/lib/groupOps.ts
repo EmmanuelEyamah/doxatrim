@@ -3,7 +3,7 @@ import { useAudioLayerStore } from "@/stores/useAudioLayerStore";
 import type { Selection } from "@/lib/selection";
 import type { Clip } from "@/types/clip";
 import type { AudioLayer } from "@/types/audioLayer";
-import { clipEnd, clipLength, layerSpan, timelineEnd } from "@/lib/timeline";
+import { clipEnd, clipLength, layerSpan, projectEnd } from "@/lib/timeline";
 
 function selected(sel: Selection): { clips: Clip[]; layers: AudioLayer[] } {
   const clips = useClipStore.getState().clips.filter((c) => sel.clips.includes(c.id));
@@ -15,7 +15,7 @@ function selected(sel: Selection): { clips: Clip[]; layers: AudioLayer[] } {
 export function selectionSpan(sel: Selection): { start: number; end: number } | null {
   const { clips, layers } = selected(sel);
   if (clips.length === 0 && layers.length === 0) return null;
-  const end = timelineEnd(useClipStore.getState().clips);
+  const end = projectEnd(useClipStore.getState().clips, useAudioLayerStore.getState().layers);
   let start = Infinity;
   let stop = 0;
   for (const c of clips) {
@@ -40,7 +40,7 @@ export function repeatSelection(sel: Selection, count: number): Selection {
   const length = span.end - span.start;
   if (length <= 0.05) return { clips: [], layers: [] };
   const { clips, layers } = selected(sel);
-  const end = timelineEnd(useClipStore.getState().clips);
+  const end = projectEnd(useClipStore.getState().clips, useAudioLayerStore.getState().layers);
 
   const newClips: Clip[] = [];
   const newLayers: AudioLayer[] = [];
