@@ -29,7 +29,7 @@ interface SelectableEntry extends PlaylistEntry {
 }
 
 interface JobProgress {
-  phase: "downloading" | "transferring";
+  phase: "downloading" | "transferring" | "reading";
   percent: number;
   speed: string | null;
   eta: string | null;
@@ -176,6 +176,9 @@ export const UrlImport = () => {
       try {
         const file = await importSingleVideo(entry.url);
         lastFile = { blob: file };
+        // The bytes are here; the browser now decodes headers + a thumbnail
+        // frame. Say so — "transferring 100%" with a spinner read as stuck.
+        setJobProgress({ phase: "reading", percent: 100, speed: null, eta: null });
         const { assets, rejected } = await importFiles([file], {
           origin: "url",
           sourceUrl: entry.url,
@@ -388,7 +391,9 @@ export const UrlImport = () => {
           <p className="text-xs text-muted-foreground">
             Importing {progress.done + 1}/{progress.total}
             {jobProgress &&
-              ` — ${jobProgress.phase === "downloading" ? "downloading" : "transferring to browser"} ${jobProgress.percent}%`}
+              (jobProgress.phase === "reading"
+                ? " — reading the file"
+                : ` — ${jobProgress.phase === "downloading" ? "downloading" : "transferring to browser"} ${jobProgress.percent}%`)}
             {jobProgress?.speed && ` · ${jobProgress.speed}`}
             {jobProgress?.eta && ` · ETA ${jobProgress.eta}`}
           </p>
@@ -407,6 +412,11 @@ export const UrlImport = () => {
           {jobProgress?.phase === "transferring" && (
             <p className="text-[11px] text-muted-foreground">
               Download from the source finished — now moving the file to your browser.
+            </p>
+          )}
+          {jobProgress?.phase === "reading" && (
+            <p className="text-[11px] text-muted-foreground">
+              File received — reading its length and grabbing a thumbnail. A few seconds at most.
             </p>
           )}
         </div>

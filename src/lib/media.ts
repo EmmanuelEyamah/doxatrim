@@ -17,12 +17,25 @@ export function readMediaInfo(file: File, type: ClipType): Promise<MediaInfo> {
         ? { width: el.videoWidth, height: el.videoHeight }
         : {};
 
-    const finish = (duration: number) => {
+    const fail = (message: string) => {
       if (settled) return;
       settled = true;
-      const info = { duration: Number.isFinite(duration) ? duration : 0, ...dimensions() };
       URL.revokeObjectURL(url);
-      resolve(info);
+      reject(new Error(message));
+    };
+
+    const finish = (duration: number) => {
+      if (settled) return;
+      if (!Number.isFinite(duration) || duration <= 0) {
+        fail(
+          `Could not read the length of ${file.name}. It may use a codec this browser can't decode` +
+            ` (for example AV1) — try importing it again, or re-encode it to H.264/AAC.`
+        );
+        return;
+      }
+      settled = true;
+      URL.revokeObjectURL(url);
+      resolve({ duration, ...dimensions() });
     };
 
     el.preload = "metadata";
@@ -47,10 +60,8 @@ export function readMediaInfo(file: File, type: ClipType): Promise<MediaInfo> {
     };
 
     el.onerror = () => {
-      if (settled) return;
-      settled = true;
-      URL.revokeObjectURL(url);
-      reject(new Error(`Could not read metadata for ${file.name}`));
+      const detail = el.error?.message ? ` (${el.error.message})` : "";
+      fail(`This browser can't open ${file.name}${detail}. Try re-encoding it to H.264/AAC mp4.`);
     };
 
     // Absolute fallback — never let an import hang indefinitely on a file
@@ -63,10 +74,28 @@ export async function readMediaDuration(file: File, type: ClipType): Promise<num
   return (await readMediaInfo(file, type)).duration;
 }
 
+/** Thumbnails are a nicety: a file whose frames never decode must not block the import. */
+const THUMBNAIL_TIMEOUT_MS = 10_000;
+
 export function generateVideoThumbnail(file: File): Promise<string | undefined> {
   return new Promise((resolve) => {
     const video = document.createElement("video");
     const url = URL.createObjectURL(file);
+    let done = false;
+    const settle = (value: string | undefined) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      video.onloadeddata = null;
+      video.onseeked = null;
+      video.onerror = null;
+      video.removeAttribute("src");
+      video.load();
+      URL.revokeObjectURL(url);
+      resolve(value);
+    };
+    const timer = setTimeout(() => settle(undefined), THUMBNAIL_TIMEOUT_MS);
+
     video.preload = "metadata";
     video.muted = true;
     video.src = url;
@@ -82,21 +111,16 @@ export function generateVideoThumbnail(file: File): Promise<string | undefined> 
         canvas.height = video.videoHeight || 90;
         const ctx = canvas.getContext("2d");
         if (!ctx) {
-          resolve(undefined);
+          settle(undefined);
           return;
         }
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        resolve(canvas.toDataURL("image/jpeg", 0.7));
+        settle(canvas.toDataURL("image/jpeg", 0.7));
       } catch {
-        resolve(undefined);
-      } finally {
-        URL.revokeObjectURL(url);
+        settle(undefined);
       }
     };
 
-    video.onerror = () => {
-      URL.revokeObjectURL(url);
-      resolve(undefined);
-    };
+    video.onerror = () => settle(undefined);
   });
 }

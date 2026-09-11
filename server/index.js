@@ -337,7 +337,15 @@ function runYtDlp(url, cwd, audioOnly, onProgress) {
           // Capped at 1080p — a lot of YouTube source is 4K/8K, and downloading
           // full quality for a trim tool was making imports painfully slow for
           // no real benefit (nobody's exporting 4K out of DoxaTrim v1 anyway).
-          "-f", "bv*[height<=1080]+ba/b[height<=1080]/b",
+          //
+          // Codec matters as much as resolution: left to itself yt-dlp picks
+          // the smallest 1080p stream, which on YouTube is AV1 + Opus. Not
+          // every browser can decode AV1 (Safari needs recent hardware), and
+          // a file the browser can't decode looked like an import that hung
+          // at "transferring 100%". H.264 + AAC plays everywhere and is what
+          // the mp4 export path stream-copies without surprises.
+          "-f", "bv*+ba/b",
+          "-S", "res:1080,vcodec:h264,acodec:m4a",
           "--merge-output-format", "mp4",
           "--newline", // one progress update per line, not carriage-return overwrites
           // Named from the real video title (yt-dlp sanitizes it for the
