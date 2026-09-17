@@ -4,6 +4,7 @@ import {
   AudioLines,
   AudioWaveform,
   BoxSelect,
+  Brackets,
   Copy,
   Download,
   Magnet,
@@ -27,6 +28,7 @@ import { readMediaDuration } from "@/lib/media";
 import { addAssetsToTimeline, importFiles } from "@/lib/importFiles";
 import { snapTime } from "@/lib/snap";
 import { bounceClipsToAudioLayer } from "@/lib/bounce";
+import { useRangeStore } from "@/stores/useRangeStore";
 import { clipEnd, layerSpan, projectEnd, timelineToClipLocal, trackCount as countTracks } from "@/lib/timeline";
 import {
   EMPTY_SELECTION,
@@ -40,7 +42,7 @@ import {
   type ItemKind,
   type Selection,
 } from "@/lib/selection";
-import { moveSnapshot, removeSelection, repeatSelection, snapshotSelection, type DragSnapshot } from "@/lib/groupOps";
+import { moveSnapshot, removeSelection, repeatSelection, selectionSpan, snapshotSelection, type DragSnapshot } from "@/lib/groupOps";
 import { useAssetStore } from "@/stores/useAssetStore";
 import { useAudioLayerStore } from "@/stores/useAudioLayerStore";
 import { useClipStore } from "@/stores/useClipStore";
@@ -96,6 +98,11 @@ export const MixTimeline = ({ player, selection, onSelect, height, onHeightChang
   const updateTrim = useClipStore((s) => s.updateTrim);
   const splitClip = useClipStore((s) => s.splitClip);
   const layers = useAudioLayerStore((s) => s.layers);
+  const range = useRangeStore((s) => s.range);
+  const setRange = useRangeStore((s) => s.setRange);
+  const markIn = useRangeStore((s) => s.markIn);
+  const markOut = useRangeStore((s) => s.markOut);
+  const clearRange = useRangeStore((s) => s.clear);
   const addLayer = useAudioLayerStore((s) => s.addLayer);
   const updateLayer = useAudioLayerStore((s) => s.updateLayer);
   const splitLayer = useAudioLayerStore((s) => s.splitLayer);
@@ -106,6 +113,16 @@ export const MixTimeline = ({ player, selection, onSelect, height, onHeightChang
   const scale = useTimelineScale();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [viewportWidth, setViewportWidth] = useState(0);
+  const [scrollLeft, setScrollLeft] = useState(0);
+  // Follow-playhead state: following pauses the moment the user scrolls away
+  // themselves and resumes once the playhead is back on screen (or playback
+  // restarts), so the view never fights a hand on the scrollbar.
+  const followRef = useRef(true);
+  const programmaticScrollRef = useRef(false);
+  const scrubbingRef = useRef(false);
+  const setScrubbing = useCallback((active: boolean) => {
+    scrubbingRef.current = active;
+  }, []);
   const [snapEnabled, setSnapEnabled] = useState(true);
   const [isDragOver, setIsDragOver] = useState(false);
   const [repeatCount, setRepeatCount] = useState(2);
@@ -136,21 +153,37 @@ export const MixTimeline = ({ player, selection, onSelect, height, onHeightChang
     }
   }, [end, viewportWidth, scale]);
 
-  // Keep the playhead in view while playing.
+  // Keep the playhead in view while playing — but only while the user isn't
+  // looking elsewhere: a manual scroll suspends following until the playhead
+  // re-enters the viewport, and a scrub never triggers a page flip.
   useEffect(() => {
     if (!player.playing) return;
+    followRef.current = true;
     let raf = 0;
     const loop = () => {
       const el = scrollRef.current;
-      if (el) {
+      if (el && !scrubbingRef.current) {
         const x = scale.timeToX(player.getTimelineTimeNow());
-        if (x > el.scrollLeft + el.clientWidth - 40 || x < el.scrollLeft) el.scrollLeft = Math.max(0, x - 80);
+        const inView = x >= el.scrollLeft && x <= el.scrollLeft + el.clientWidth;
+        if (inView) followRef.current = true;
+        if (followRef.current && (x > el.scrollLeft + el.clientWidth - 40 || x < el.scrollLeft)) {
+          programmaticScrollRef.current = true;
+          el.scrollLeft = Math.max(0, x - 80);
+        }
       }
       raf = requestAnimationFrame(loop);
     };
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
   }, [player.playing, player.getTimelineTimeNow, scale]);
+
+  const onScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    setScrollLeft(el.scrollLeft);
+    if (programmaticScrollRef.current) programmaticScrollRef.current = false;
+    else followRef.current = false;
+  }, []);
 
   const onResizeDown = usePointerDrag({
     onMove: (_dx, dy) => {
@@ -388,6 +421,19 @@ export const MixTimeline = ({ player, selection, onSelect, height, onHeightChang
     }
   };
 
+  const rangeFromSelection = useCallback(
+    (target: Selection = selection) => {
+      const span = selectionSpan(target);
+      if (!span) {
+        toast("Select the clips you want to export first");
+        return;
+      }
+      setRange(span);
+      toast.success(`Range set: ${formatTime(span.start).slice(0, 8)} – ${formatTime(span.end).slice(0, 8)} — Export renders only this`);
+    },
+    [selection, setRange]
+  );
+
   // ── Keyboard ──
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -426,18 +472,28 @@ export const MixTimeline = ({ player, selection, onSelect, height, onHeightChang
         return;
       }
       const single = singleItem(selection);
-      if ((e.key === "i" || e.key === "o") && single?.kind === "clip") {
+      if (!cmd && (e.key === "i" || e.key === "I")) {
+        e.preventDefault();
+        markIn(player.getTimelineTimeNow(), end);
+        return;
+      }
+      if (!cmd && (e.key === "o" || e.key === "O")) {
+        e.preventDefault();
+        markOut(player.getTimelineTimeNow());
+        return;
+      }
+      if ((e.key === "[" || e.key === "]") && single?.kind === "clip") {
         const local = player.localTimeFor(single.id);
         const clip = clips.find((c) => c.id === single.id);
         if (local == null || !clip) return;
         e.preventDefault();
-        if (e.key === "i") updateTrim(clip.id, Math.min(local, clip.outPoint - 0.05), clip.outPoint);
+        if (e.key === "[") updateTrim(clip.id, Math.min(local, clip.outPoint - 0.05), clip.outPoint);
         else updateTrim(clip.id, clip.inPoint, Math.max(local, clip.inPoint + 0.05));
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selection, clips, end, updateTrim, player, splitAtPlayhead, repeat, remove, selectAll]);
+  }, [selection, clips, end, updateTrim, player, splitAtPlayhead, repeat, remove, selectAll, markIn, markOut]);
 
   const openMenu = (kind: ItemKind, id: string, e: React.MouseEvent) => {
     e.preventDefault();
@@ -516,6 +572,28 @@ export const MixTimeline = ({ player, selection, onSelect, height, onHeightChang
         >
           <Magnet size={13} /> Snap
         </button>
+        <span className="mx-1 h-5 w-px bg-border" />
+        <div className="flex items-center gap-1" title="Export range: mark In (I) and Out (O) at the playhead, or set it from the selection. Export then renders only this part.">
+          <button type="button" onClick={() => markIn(player.getTimelineTimeNow(), end)} className={toolButton}>
+            <Brackets size={13} /> In
+          </button>
+          <button type="button" onClick={() => markOut(player.getTimelineTimeNow())} className={toolButton}>
+            Out
+          </button>
+          <button type="button" onClick={() => rangeFromSelection()} disabled={count === 0} className={toolButton} title="Set the range to the selected clips/layers">
+            = selection
+          </button>
+          {range && (
+            <>
+              <span className="rounded bg-primary/15 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-primary">
+                {formatTime(range.start).slice(0, 8)} – {formatTime(range.end).slice(0, 8)}
+              </span>
+              <button type="button" onClick={clearRange} className={toolButton} title="Clear the range (export the whole project)">
+                ×
+              </button>
+            </>
+          )}
+        </div>
         <span className="ml-2 font-mono text-muted-foreground">
           {formatTime(player.timelineTime)} <span className="opacity-50">/ {formatTime(end)}</span>
         </span>
@@ -623,9 +701,19 @@ export const MixTimeline = ({ player, selection, onSelect, height, onHeightChang
           }}
           onDragLeave={() => setIsDragOver(false)}
           onDrop={(e) => void handleDrop(e)}
+          onScroll={onScroll}
         >
           <div className="relative" style={{ width: contentWidth, minHeight: "100%" }} onPointerDown={onMarqueeDown}>
-            <TimeRuler duration={end} width={contentWidth} scale={scale} onSeek={player.seek} />
+            <TimeRuler
+              duration={end}
+              width={contentWidth}
+              scale={scale}
+              viewport={{ left: scrollLeft, width: viewportWidth }}
+              onSeek={player.seek}
+              onScrubbing={setScrubbing}
+              range={range}
+              onRangeChange={setRange}
+            />
             <VideoLanes
               clips={clips}
               trackCount={tracks}
@@ -661,6 +749,17 @@ export const MixTimeline = ({ player, selection, onSelect, height, onHeightChang
                 Drop music, voiceover, or a video here to add an audio layer at that point in time.
               </motion.p>
             )}
+            {range && (
+              <div
+                className="pointer-events-none absolute z-[5] border-x border-primary/40 bg-primary/5"
+                style={{
+                  top: RULER_HEIGHT,
+                  height: Math.max(lanesHeight, height) - RULER_HEIGHT,
+                  left: scale.timeToX(range.start),
+                  width: Math.max(2, scale.timeToX(range.end) - scale.timeToX(range.start)),
+                }}
+              />
+            )}
             {marquee && (
               <div
                 className="pointer-events-none absolute z-20 rounded border border-primary bg-primary/10"
@@ -672,7 +771,7 @@ export const MixTimeline = ({ player, selection, onSelect, height, onHeightChang
                 }}
               />
             )}
-            <Playhead player={player} scale={scale} height={Math.max(lanesHeight, height)} />
+            <Playhead player={player} scale={scale} height={Math.max(lanesHeight, height)} onScrubbing={setScrubbing} />
           </div>
         </div>
       </div>
@@ -714,6 +813,8 @@ export const MixTimeline = ({ player, selection, onSelect, height, onHeightChang
                 {menuItem("Save source to disk", <Download size={12} />, () => downloadFile(menuSingleClip.file, menuSingleClip.file.name))}
               </>
             )}
+            <div className="my-1 h-px bg-border" />
+            {menuItem("Export only this (set range)", <Brackets size={12} />, () => rangeFromSelection(menu.target))}
             <div className="my-1 h-px bg-border" />
             {menuItem("Remove", <Trash2 size={12} />, () => remove(menu.target), { danger: true })}
           </motion.div>

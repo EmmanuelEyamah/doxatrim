@@ -4,6 +4,7 @@ import toast from "react-hot-toast";
 import { AudioLines, Download, Loader2, Trash2, Video } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MediaPlayer } from "@/components/MediaPlayer";
+import { Switch } from "@/components/Switch";
 import { useFFmpeg } from "@/hooks/useFFmpeg";
 import { useClipStore } from "@/stores/useClipStore";
 import { useAudioLayerStore } from "@/stores/useAudioLayerStore";
@@ -11,16 +12,24 @@ import { makeGapSegment, trimSegment } from "@/lib/ffmpeg/trim";
 import { concatClips, readAndCleanup } from "@/lib/ffmpeg/concat";
 import { mixAudioLayers } from "@/lib/ffmpeg/mix";
 import { smoothJoins } from "@/lib/ffmpeg/smooth";
-import { computeEdl, isLayerActive, measuredTimeline, projectEnd } from "@/lib/timeline";
+import { useRangeStore } from "@/stores/useRangeStore";
+import { formatTime } from "@/lib/formatTime";
+import { computeEdl, isLayerActive, measuredTimeline, projectEnd, sliceEdl, sliceLayers } from "@/lib/timeline";
 import type { OutputFormat } from "@/types/project";
 
 type AudioFormat = "mp3" | "wav";
 type ExportAs = "video" | "audio";
+type Scope = "range" | "project";
 
 const LARGE_LAYER_BYTES = 500 * 1024 * 1024;
 
 function baseName(filename: string): string {
   return filename.replace(/\.[^./]+$/, "");
+}
+
+/** hh.mm.ss — colons aren't allowed in file names on every OS. */
+function fileTime(t: number): string {
+  return formatTime(t).slice(0, 8).replace(/:/g, ".");
 }
 
 function describeError(err: unknown): string {
@@ -34,9 +43,12 @@ function describeError(err: unknown): string {
 export const ExportPanel = () => {
   const clips = useClipStore((s) => s.clips);
   const joinCrossfade = useClipStore((s) => s.joinCrossfade);
-  const layers = useAudioLayerStore((s) => s.layers);
+  const allLayers = useAudioLayerStore((s) => s.layers);
   const mainVolume = useAudioLayerStore((s) => s.mainVolume);
+  const markedRange = useRangeStore((s) => s.range);
   const { ffmpeg, loaded, loading, progress, error: loadError } = useFFmpeg();
+  const [scope, setScope] = useState<Scope>("range");
+  const [skipLeadingGap, setSkipLeadingGap] = useState(true);
   const [exporting, setExporting] = useState(false);
   const [stage, setStage] = useState<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
@@ -44,15 +56,38 @@ export const ExportPanel = () => {
   const [exportAs, setExportAs] = useState<ExportAs>("video");
   const [audioFormat, setAudioFormat] = useState<AudioFormat>("mp3");
 
-  if (clips.length === 0 && layers.length === 0) return null;
+  if (clips.length === 0 && allLayers.length === 0) return null;
 
   // With no video clips at all (e.g. everything was converted to audio) the
   // project is audio-only: a silent base of the project's length + the layers.
   const projectType = clips[0]?.type ?? "audio";
   const dropVideo = projectType === "video" && exportAs === "audio";
   const outputFormat: OutputFormat = projectType === "video" && exportAs === "video" ? "mp4" : audioFormat;
-  const end = projectEnd(clips, layers);
-  const segments = computeEdl(clips, end);
+  const fullEnd = projectEnd(clips, allLayers);
+  const fullSegments = computeEdl(clips, fullEnd);
+
+  // A marked In/Out range exports just that stretch of the project — the way
+  // to pull ten minutes out of a seven-hour recording without deleting the
+  // rest. The EDL and the layers are sliced and re-based so the range starts at 0.
+  // Empty timeline before the first clip or layer — typically a clip whose
+  // head was trimmed in place — would export as dead silence. Skip it unless
+  // the user asks for it (a marked range is explicit and always honoured).
+  const contentStart = Math.min(
+    fullEnd,
+    ...clips.map((c) => c.startAt),
+    ...allLayers.filter((l) => isLayerActive(l, fullEnd)).map((l) => l.startAt)
+  );
+  const leadingGap = contentStart > 0.01 ? contentStart : 0;
+  const markedScope = markedRange && scope === "range";
+  const range = markedScope
+    ? { start: Math.min(markedRange.start, fullEnd), end: Math.min(markedRange.end, fullEnd) }
+    : leadingGap > 0 && skipLeadingGap
+      ? { start: leadingGap, end: fullEnd }
+      : null;
+  const usingRange = !!range && range.end - range.start > 0.01;
+  const end = usingRange ? range!.end - range!.start : fullEnd;
+  const segments = usingRange ? sliceEdl(fullSegments, range!.start, range!.end) : fullSegments;
+  const layers = usingRange ? sliceLayers(allLayers, range!.start, range!.end, fullEnd) : allLayers;
   const gapCount = segments.filter((s) => !s.clipId).length;
   const joinCount = segments.filter((s, i) => i > 0 && s.clipId && segments[i - 1].clipId).length;
   const smoothing = joinCrossfade > 0 && joinCount > 0;
@@ -61,7 +96,9 @@ export const ExportPanel = () => {
   const extensions = new Set(clips.map((c) => c.file.name.split(".").pop()?.toLowerCase()));
   const formatMismatch = extensions.size > 1 || gapCount > 0;
   const layerBytes = layers.reduce((sum, l) => sum + l.file.size, 0);
-  const exportFilename = `${baseName(clips[0]?.file.name ?? layers[0]?.name ?? "doxatrim")} (edited).${outputFormat}`;
+  const exportFilename = `${baseName(clips[0]?.file.name ?? allLayers[0]?.name ?? "doxatrim")} ${
+    markedScope && usingRange ? `(${fileTime(range!.start)}-${fileTime(range!.end)})` : "(edited)"
+  }.${outputFormat}`;
 
   const clearOutput = () => {
     if (outputUrl) URL.revokeObjectURL(outputUrl);
@@ -196,8 +233,46 @@ export const ExportPanel = () => {
         </div>
       </div>
 
+      {markedRange && (
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <div className="flex rounded-lg border border-border p-1">
+            <button
+              type="button"
+              onClick={() => setScope("range")}
+              className={cn(
+                "rounded-md px-3 py-1 font-semibold transition-colors",
+                scope === "range" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              Range · {formatTime(markedRange.start).slice(0, 8)} – {formatTime(markedRange.end).slice(0, 8)}
+            </button>
+            <button
+              type="button"
+              onClick={() => setScope("project")}
+              className={cn(
+                "rounded-md px-3 py-1 font-semibold transition-colors",
+                scope === "project" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              Whole project · {formatTime(fullEnd).slice(0, 8)}
+            </button>
+          </div>
+          <span className="text-muted-foreground">Set the range on the timeline with I / O or “= selection”.</span>
+        </div>
+      )}
+
+      {leadingGap > 0 && !markedScope && (
+        <label className="flex items-center gap-2 text-xs">
+          <Switch checked={skipLeadingGap} onChange={setSkipLeadingGap} label="Skip empty timeline before the first clip" />
+          <span>
+            Skip the {formatTime(leadingGap).slice(0, 8)} of empty timeline before the first clip
+            {skipLeadingGap ? " — the export starts where the sound starts." : " — off: the export begins with that much silence."}
+          </span>
+        </label>
+      )}
+
       <p className="text-xs text-muted-foreground">
-        Renders the whole timeline — {segments.filter((s) => s.clipId).length} clip piece
+        {markedScope && usingRange ? `Renders ${formatTime(end).slice(0, 8)} of the project` : usingRange ? `Renders ${formatTime(end).slice(0, 8)}` : "Renders the whole timeline"} — {segments.filter((s) => s.clipId).length} clip piece
         {segments.filter((s) => s.clipId).length === 1 ? "" : "s"}
         {gapCount > 0 ? `, ${gapCount} empty gap${gapCount > 1 ? "s" : ""} (black + silence)` : ""}
         {activeLayerCount > 0 ? `, ${activeLayerCount} audio layer${activeLayerCount > 1 ? "s" : ""} mixed in` : ""}

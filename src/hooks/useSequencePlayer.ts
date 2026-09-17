@@ -20,7 +20,10 @@ export interface SequencePlayer {
   toggle: () => void;
   seek: (t: number) => void;
   seekToClip: (clipId: string) => void;
+  /** Jump to the previous/next cut; past the last cut goes to the end of the project. */
   stepSegment: (delta: 1 | -1) => void;
+  /** Move the playhead by a number of seconds (negative = back) from its live position. */
+  skip: (seconds: number) => void;
   /** Live timeline position computed from the element/gap clock (not throttled state). */
   getTimelineTimeNow: () => number;
   /** Clip-local element time if `clipId` is the clip currently loaded, else null. */
@@ -121,6 +124,11 @@ export function useSequencePlayer(clips: Clip[], extendTo = 0): SequencePlayer {
         pendingRef.current = { localTime: target, autoplay };
         el.src = url;
         el.load();
+      } else if (pendingRef.current) {
+        // Same source, still loading its metadata (a long file can take a
+        // moment): retarget the pending seek instead of letting the original
+        // one land later and yank the playhead back.
+        pendingRef.current = { localTime: target, autoplay };
       } else {
         el.currentTime = target;
         if (autoplay) void el.play().catch(() => {});
@@ -228,11 +236,14 @@ export function useSequencePlayer(clips: Clip[], extendTo = 0): SequencePlayer {
     (delta: 1 | -1) => {
       const segs = segmentsRef.current;
       if (segs.length === 0) return;
-      const target = Math.min(Math.max(segIndexRef.current + delta, 0), segs.length - 1);
-      seek(segs[target].start);
+      const target = segIndexRef.current + delta;
+      if (target >= segs.length) seek(durationRef.current);
+      else seek(segs[Math.max(target, 0)].start);
     },
     [seek]
   );
+
+  const skip = useCallback((seconds: number) => seek(getTimelineTimeNow() + seconds), [seek, getTimelineTimeNow]);
 
   const localTimeFor = useCallback((clipId: string) => {
     const el = elRef.current;
@@ -330,6 +341,7 @@ export function useSequencePlayer(clips: Clip[], extendTo = 0): SequencePlayer {
     seek,
     seekToClip,
     stepSegment,
+    skip,
     getTimelineTimeNow,
     localTimeFor,
   };

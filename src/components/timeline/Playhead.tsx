@@ -7,10 +7,12 @@ interface PlayheadProps {
   player: SequencePlayer;
   scale: TimelineScale;
   height: number;
+  /** Fires when the user starts/stops dragging the playhead. */
+  onScrubbing?: (active: boolean) => void;
 }
 
 /** Owns its own animation frame so only this element re-renders at 60fps while playing. */
-export const Playhead = ({ player, scale, height }: PlayheadProps) => {
+export const Playhead = ({ player, scale, height, onScrubbing }: PlayheadProps) => {
   const { playing, timelineTime, getTimelineTimeNow, seek } = player;
   const [t, setT] = useState(timelineTime);
   const startTimeRef = useRef(0);
@@ -32,8 +34,10 @@ export const Playhead = ({ player, scale, height }: PlayheadProps) => {
   const onPointerDown = usePointerDrag({
     onStart: () => {
       startTimeRef.current = t;
+      onScrubbing?.(true);
     },
     onMove: (dx) => seek(startTimeRef.current + scale.xToTime(dx)),
+    onEnd: () => onScrubbing?.(false),
   });
 
   const x = scale.timeToX(t);

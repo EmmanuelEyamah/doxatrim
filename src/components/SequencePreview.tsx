@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { AudioLines, Maximize, Pause, Play, SkipBack, SkipForward, Volume2, VolumeX } from "lucide-react";
+import { AudioLines, Maximize, Pause, Play, Rewind, FastForward, Volume2, VolumeX } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatTime } from "@/lib/formatTime";
 import type { Clip } from "@/types/clip";
@@ -48,15 +48,42 @@ export const SequencePreview = ({ clips, player, attachMain, onBeforePlay, class
     }
   }, [playing, player, onBeforePlay]);
 
+  // Transport keys: Space play/pause · J / L back/forward 10 s (Shift: 1 min)
+  // · ↑ / ↓ previous/next cut · Home / End start/end of project.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.code !== "Space" || isTypingTarget(e.target)) return;
+      if (isTypingTarget(e.target) || e.metaKey || e.ctrlKey || e.altKey) return;
+      const skipBy = e.shiftKey ? 60 : 10;
+      switch (e.code) {
+        case "Space":
+          togglePlay();
+          break;
+        case "KeyJ":
+          player.skip(-skipBy);
+          break;
+        case "KeyL":
+          player.skip(skipBy);
+          break;
+        case "ArrowUp":
+          player.stepSegment(-1);
+          break;
+        case "ArrowDown":
+          player.stepSegment(1);
+          break;
+        case "Home":
+          player.seek(0);
+          break;
+        case "End":
+          player.seek(player.duration);
+          break;
+        default:
+          return;
+      }
       e.preventDefault();
-      togglePlay();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [togglePlay]);
+  }, [togglePlay, player]);
 
   const toggleMute = () => {
     const el = elRef.current;
@@ -108,8 +135,16 @@ export const SequencePreview = ({ clips, player, attachMain, onBeforePlay, class
       </div>
 
       <div className="flex items-center gap-2">
-        <motion.button type="button" onClick={() => player.stepSegment(-1)} whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} className={iconButton} aria-label="Previous cut">
-          <SkipBack size={16} />
+        <motion.button
+          type="button"
+          onClick={(e) => player.skip(e.shiftKey ? -60 : -10)}
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.95 }}
+          className={iconButton}
+          aria-label="Back 10 seconds"
+          title="Back 10 s (Shift: 1 min · J) · ↑ previous cut · Home = start"
+        >
+          <Rewind size={16} />
         </motion.button>
         <motion.button
           type="button"
@@ -121,8 +156,16 @@ export const SequencePreview = ({ clips, player, attachMain, onBeforePlay, class
         >
           {playing ? <Pause size={16} /> : <Play size={16} className="ml-0.5" />}
         </motion.button>
-        <motion.button type="button" onClick={() => player.stepSegment(1)} whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} className={iconButton} aria-label="Next cut">
-          <SkipForward size={16} />
+        <motion.button
+          type="button"
+          onClick={(e) => player.skip(e.shiftKey ? 60 : 10)}
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.95 }}
+          className={iconButton}
+          aria-label="Forward 10 seconds"
+          title="Forward 10 s (Shift: 1 min · L) · ↓ next cut · End = end"
+        >
+          <FastForward size={16} />
         </motion.button>
 
         <span className="w-20 shrink-0 font-mono text-xs text-muted-foreground">{formatTime(timelineTime)}</span>

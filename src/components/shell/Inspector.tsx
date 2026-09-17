@@ -207,7 +207,7 @@ const ClipInspector = ({
           constrainPlayback={false}
         />
         <p className="text-[10px] text-muted-foreground">
-          <kbd className="rounded border border-border px-1">I</kbd> / <kbd className="rounded border border-border px-1">O</kbd> mark in/out at the playhead ·{" "}
+          <kbd className="rounded border border-border px-1">[</kbd> / <kbd className="rounded border border-border px-1">]</kbd> trim in/out at the playhead ·{" "}
           <kbd className="rounded border border-border px-1">S</kbd> splits
         </p>
       </Section>

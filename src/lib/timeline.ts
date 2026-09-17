@@ -96,6 +96,63 @@ export function computeEdl(clips: Clip[], extendTo = 0): EdlSegment[] {
   return segments;
 }
 
+/**
+ * The part of an EDL between `start` and `end`, re-based so `start` becomes 0.
+ * Used to export just a marked range of a long project.
+ */
+export function sliceEdl(segments: EdlSegment[], start: number, end: number): EdlSegment[] {
+  const out: EdlSegment[] = [];
+  for (const seg of segments) {
+    const a = Math.max(seg.start, start);
+    const b = Math.min(seg.end, end);
+    if (b - a < EPS) continue;
+    out.push({
+      start: round3(a - start),
+      end: round3(b - start),
+      clipId: seg.clipId,
+      srcIn: seg.clipId ? seg.srcIn + (a - seg.start) : 0,
+    });
+  }
+  return out;
+}
+
+/**
+ * Audio layers as they play inside [start, end], re-based so `start` is 0 —
+ * each keeps the exact sound it made at that point of the full project. A
+ * looped layer entered mid-cycle becomes a play-once head (the rest of that
+ * cycle) followed by the loop proper, so its phase is preserved.
+ */
+export function sliceLayers(layers: AudioLayer[], start: number, end: number, projectEnd: number): AudioLayer[] {
+  const out: AudioLayer[] = [];
+  for (const l of layers) {
+    const segment = l.outPoint - l.inPoint;
+    if (segment <= EPS) continue;
+    const span = layerSpan(l, projectEnd);
+    const a = Math.max(l.startAt, start);
+    const b = Math.min(l.startAt + span, end);
+    if (b - a < 0.01) continue;
+    const offset = a - l.startAt; // how far into the layer the range enters it
+    const localStart = a - start;
+    const localEnd = b - start;
+
+    if (!l.loop) {
+      out.push({ ...l, inPoint: l.inPoint + offset, startAt: localStart, endAt: localEnd, loop: false });
+      continue;
+    }
+
+    const phase = offset % segment;
+    const headLength = Math.min(segment - phase, localEnd - localStart);
+    if (phase > EPS) {
+      out.push({ ...l, id: `${l.id}:head`, inPoint: l.inPoint + phase, startAt: localStart, endAt: localStart + headLength, loop: false });
+    }
+    const loopStart = phase > EPS ? localStart + headLength : localStart;
+    if (localEnd - loopStart > 0.01) {
+      out.push({ ...l, startAt: loopStart, endAt: localEnd, loop: true });
+    }
+  }
+  return out;
+}
+
 export function segmentAt(segments: EdlSegment[], t: number): number {
   const idx = segments.findIndex((s) => t >= s.start && t < s.end);
   return idx === -1 ? Math.max(0, segments.length - 1) : idx;
